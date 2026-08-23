@@ -16,7 +16,7 @@ from .compat import (
     verify_and_bind,
 )
 from .compat2 import proxy_video_url
-from .compat3 import app, canonical_video_key, dedupe, to_original_xhs_image_url
+from .compat3 import app, canonical_video_key, dedupe
 
 # 只取代 GATE；圖片與影片代理沿用既有版本。
 app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) != "/xhszshq"]
@@ -87,8 +87,14 @@ def inspect_one_url_only(input_url: str) -> tuple[str, list[str], list[str], str
 
 
 def _proxy_images(items: list[str]) -> list[str]:
-    originals = dedupe([to_original_xhs_image_url(x) for x in items if x])
-    return [f"{PUBLIC_BASE}/media/image?url={quote(x, safe='')}" for x in originals]
+    """直接代理 gallery-dl 對目前文章網址實際回傳的圖片。
+
+    不再把 xhscdn URL 轉寫/猜成 ci.xiaohongshu.com/<trace>，避免原本存在的
+    圖片 URL 被合成成不存在的來源而 502。gallery-dl 的輸入已鎖定為單一文章 URL，
+    所以來源邊界由文章網址決定，而不是靠圖片路徑規則鎖死。
+    """
+    scoped = dedupe([x for x in items if x and _allowed_scoped_image(x)])
+    return [f"{PUBLIC_BASE}/media/image?url={quote(x, safe='')}" for x in scoped]
 
 
 @app.get("/xhszshq")
@@ -173,7 +179,7 @@ def xhszshq_gate(
             "live_count": len(ligl),
             "normal_count": len(nigl),
             "parser": scoped_parser,
-            "message": "ok-single-url-scope-v1",
+            "message": "ok-single-url-scope-v2-direct-media",
         })
 
     # 若 gallery-dl 對影片網址沒有輸出，僅允許 URL 專屬的 yt-dlp 影片解析；
