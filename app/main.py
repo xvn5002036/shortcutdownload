@@ -13,9 +13,8 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from .db import (
@@ -41,19 +40,20 @@ ALLOWED_HOSTS = {
 }
 MAX_BYTES = int(os.getenv("MAX_DOWNLOAD_MB", "250")) * 1024 * 1024
 TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
-
-# 固定驗證值以 SHA-256 寫死，避免把實際密鑰明文提交到公開 GitHub。
-# 管理員帳號固定為 admin，密碼使用先前設定的管理員權杖。
-ADMIN_USERNAME = "admin"
 ADMIN_TOKEN_SHA256 = "8827d2cb4a89abd6a61fe462412ae6134d3ceee19ef1f60cc5f891282ecc044b"
 DOWNLOAD_API_KEY_SHA256 = "bfd281cee986f99552a49a05b4a88d9740412fa123a5b6efdc852ff9d5697f7b"
+SESSION_COOKIE = "xhs_admin_session"
+SESSION_MAX_AGE = 60 * 60 * 24 * 365 * 10
 
-security = HTTPBasic()
-app = FastAPI(title="XHS Pro System", version="1.2.0")
+app = FastAPI(title="XHS Pro System", version="1.3.0")
 
 
 class DownloadRequest(BaseModel):
     url: str = Field(min_length=10, max_length=2048)
+
+
+class LoginRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=200)
 
 
 class LicenseCreateRequest(BaseModel):
@@ -81,16 +81,18 @@ def hash_matches(value: str | None, expected_hash: str) -> bool:
     return secrets.compare_digest(actual, expected_hash)
 
 
-def require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str:
-    username_ok = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
-    password_ok = hash_matches(credentials.password, ADMIN_TOKEN_SHA256)
-    if not username_ok or not password_ok:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="管理員帳號或密碼錯誤",
-            headers={"WWW-Authenticate": "Basic realm=\"XHS Pro Admin\""},
-        )
-    return credentials.username
+def session_value() -> str:
+    secret = os.getenv("XHS_ADMIN_TOKEN", "")
+    if not secret:
+        return ""
+    return hashlib.sha256((secret + ":xhs-admin-session-v1").encode("utf-8")).hexdigest()
+
+
+def require_admin(xhs_admin_session: str | None = Cookie(default=None)) -> str:
+    expected = session_value()
+    if not expected or not xhs_admin_session or not secrets.compare_digest(xhs_admin_session, expected):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="請登入管理後台")
+    return "admin"
 
 
 def validate_url(raw_url: str) -> str:
@@ -118,10 +120,7 @@ def check_key(value: str | None) -> None:
 
 def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
     try:
-        result = subprocess.run(
-            command, cwd=cwd, capture_output=True, text=True,
-            timeout=TIMEOUT_SECONDS, check=False,
-        )
+        result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=TIMEOUT_SECONDS, check=False)
         return result.returncode, (result.stderr or result.stdout)[-3000:]
     except subprocess.TimeoutExpired:
         return 124, "下載逾時"
@@ -129,39 +128,24 @@ def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
 
 def media_files(folder: Path) -> list[Path]:
     ignored = {"result.zip", "metadata.json"}
-    return sorted(
-        p for p in folder.rglob("*")
-        if p.is_file() and p.name not in ignored and not p.name.endswith((".part", ".ytdl"))
-    )
+    return sorted(p for p in folder.rglob("*") if p.is_file() and p.name not in ignored and not p.name.endswith((".part", ".ytdl")))
 
 
 def build_download(raw_url: str) -> tuple[Path, Path]:
     folder = Path(tempfile.mkdtemp(prefix="media-download-"))
     output = "%(title).80B-%(id)s.%(ext)s"
-    yt_command = [
-        "yt-dlp", "--no-playlist", "--restrict-filenames", "--no-write-info-json",
-        "--max-filesize", str(MAX_BYTES), "--merge-output-format", "mp4",
-        "-f", "bv*+ba/b", "-o", output, raw_url,
-    ]
+    yt_command = ["yt-dlp", "--no-playlist", "--restrict-filenames", "--no-write-info-json", "--max-filesize", str(MAX_BYTES), "--merge-output-format", "mp4", "-f", "bv*+ba/b", "-o", output, raw_url]
     yt_code, yt_error = run_command(yt_command, folder)
     files = media_files(folder)
     input_host = (urlparse(raw_url).hostname or "").lower()
     if not files and (input_host.endswith("xiaohongshu.com") or input_host.endswith("xhslink.com")):
-        image_command = [
-            "yt-dlp", "--no-playlist", "--restrict-filenames", "--skip-download",
-            "--write-all-thumbnails", "--convert-thumbnails", "jpg",
-            "-o", "%(title).80B-%(id)s-%(thumbnail_id)s.%(ext)s", raw_url,
-        ]
+        image_command = ["yt-dlp", "--no-playlist", "--restrict-filenames", "--skip-download", "--write-all-thumbnails", "--convert-thumbnails", "jpg", "-o", "%(title).80B-%(id)s-%(thumbnail_id)s.%(ext)s", raw_url]
         image_code, image_error = run_command(image_command, folder)
         files = media_files(folder)
     else:
         image_code, image_error = 0, ""
-
     if not files:
-        gallery_command = [
-            "gallery-dl", "--no-mtime", "--dest", str(folder),
-            "--filename", "{category}_{id}_{num}.{extension}", raw_url,
-        ]
+        gallery_command = ["gallery-dl", "--no-mtime", "--dest", str(folder), "--filename", "{category}_{id}_{num}.{extension}", raw_url]
         gallery_code, gallery_error = run_command(gallery_command, folder)
         files = media_files(folder)
         if not files:
@@ -172,15 +156,12 @@ def build_download(raw_url: str) -> tuple[Path, Path]:
             if yt_code == 124 or image_code == 124 or gallery_code == 124:
                 raise RuntimeError("下載逾時，請稍後重試或使用較短的內容")
             raise RuntimeError("找不到可下載的公開媒體；連結可能已失效、不是公開內容，或平台解析規則已改變")
-
     total = sum(item.stat().st_size for item in files)
     if total > MAX_BYTES:
         shutil.rmtree(folder, ignore_errors=True)
         raise RuntimeError(f"檔案超過 {MAX_BYTES // 1024 // 1024} MB 上限")
-
     if len(files) == 1:
         return folder, files[0]
-
     archive = folder / "result.zip"
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as bundle:
         for item in files:
@@ -199,8 +180,27 @@ def home() -> str:
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page(_: str = Depends(require_admin)) -> str:
-    return Path(__file__).with_name("admin.html").read_text(encoding="utf-8")
+def admin_page(xhs_admin_session: str | None = Cookie(default=None)) -> str:
+    expected = session_value()
+    filename = "admin.html" if expected and xhs_admin_session and secrets.compare_digest(xhs_admin_session, expected) else "login.html"
+    return Path(__file__).with_name(filename).read_text(encoding="utf-8")
+
+
+@app.post("/api/admin/login")
+def admin_login(request: LoginRequest, response: Response):
+    if not hash_matches(request.password, ADMIN_TOKEN_SHA256):
+        raise HTTPException(401, "管理密碼錯誤")
+    token = session_value()
+    if not token:
+        raise HTTPException(503, "伺服器尚未設定管理密鑰")
+    response.set_cookie(key=SESSION_COOKIE, value=token, max_age=SESSION_MAX_AGE, httponly=True, secure=True, samesite="strict", path="/")
+    return {"success": True}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    return {"success": True}
 
 
 @app.get("/join", response_class=HTMLResponse)
@@ -209,12 +209,7 @@ def join_page() -> str:
 
 
 @app.get("/xhszshq", response_class=PlainTextResponse)
-def xhszshq(
-    a: str = Query(default=""),
-    b: str = Query(default="ios"),
-    c: str = Query(default=""),
-    device_id: str = Query(default=""),
-) -> str:
+def xhszshq(a: str = Query(default=""), b: str = Query(default="ios"), c: str = Query(default=""), device_id: str = Query(default="")) -> str:
     ok, reason = verify_and_bind(a, device_id, b)
     log_request(a, device_id, b, reason, c)
     return "1" if ok else "0"
@@ -228,11 +223,7 @@ def verify_license(license_key: str, device_id: str, platform: str = "ios"):
 
 
 @app.post("/api/download")
-async def download(
-    request: DownloadRequest,
-    background_tasks: BackgroundTasks,
-    x_api_key: str | None = Header(default=None),
-):
+async def download(request: DownloadRequest, background_tasks: BackgroundTasks, x_api_key: str | None = Header(default=None)):
     check_key(x_api_key)
     url = validate_url(request.url)
     try:
@@ -255,17 +246,14 @@ def admin_list_licenses(_: str = Depends(require_admin)):
 @app.post("/api/admin/licenses")
 def admin_create_license(request: LicenseCreateRequest, _: str = Depends(require_admin)):
     try:
-        item = create_license(days=request.days, max_devices=request.max_devices, note=request.note, key=request.key)
+        return create_license(days=request.days, max_devices=request.max_devices, note=request.note, key=request.key)
     except Exception as exc:
         raise HTTPException(400, f"建立啟用碼失敗：{exc}") from exc
-    return item
 
 
 @app.post("/api/admin/licenses/batch")
 def admin_create_batch(request: BatchLicenseCreateRequest, _: str = Depends(require_admin)):
-    created = []
-    for _index in range(request.count):
-        created.append(create_license(days=request.days, max_devices=request.max_devices, note=request.note))
+    created = [create_license(days=request.days, max_devices=request.max_devices, note=request.note) for _ in range(request.count)]
     return {"items": created, "count": len(created)}
 
 
