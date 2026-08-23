@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import logging
 import re
 import subprocess
 from urllib.parse import quote, urlparse, urlunparse
@@ -12,6 +13,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from .main import app
 from .db import log_request, verify_and_bind
+
+logger = logging.getLogger("xhs.compat")
 
 app.router.routes[:] = [
     route for route in app.router.routes
@@ -210,6 +213,7 @@ def media_image(url: str = Query(...)):
             media_type = resp.headers.get_content_type() or "image/jpeg"
             if not media_type.startswith("image/"):
                 media_type = "image/jpeg"
+            logger.info("XHS_IMAGE_PROXY bytes=%s type=%s host=%s", len(data), media_type, urlparse(url).hostname or "")
             return Response(content=data, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})
     except HTTPException:
         raise
@@ -234,23 +238,10 @@ def xhszshq_gate(
     images = [proxy_image_url(x) for x in raw_images]
     first_image = images[0] if images else ""
     note_url = note["resolved_url"] or normalize_xhs_url(c)
-
-    # 重要：原捷徑很可能在圖片分支直接讀 GATE.url。
-    # 圖片筆記時，url 改為「完整圖片清單」而不是原筆記網址；
-    # 影片筆記時，url 改為影片網址。原筆記網址另外保留在 note_url/source_url。
     media_url = images if note["nt"] == "pic" else (note["video"] or note_url)
 
-    payload = {
-        "status": 1,
-        "gate": 1,
-        "notetype": note["notetype"],
-        "nt": note["nt"],
-        "url": media_url,
-        "note_url": note_url,
-        "source_url": note_url,
-        "title": note["title"],
-        "author": note["author"],
-
+    # 盡量對齊不同版本捷徑可能使用的圖片欄位名稱。
+    image_aliases = {
         "images": images,
         "image": images,
         "pic": images,
@@ -271,11 +262,46 @@ def xhszshq_gate(
         "img_urls": images,
         "downloadUrls": images,
         "download_urls": images,
+        "picurl": images,
+        "picurls": images,
+        "picUrl": images,
+        "picUrls": images,
+        "imgurl": images,
+        "imgurls": images,
+        "imgUrl": images,
+        "imgUrls2": images,
+        "photo": images,
+        "photos": images,
+        "photoUrls": images,
+        "photo_urls": images,
+        "origin": images,
+        "original": images,
+        "originUrls": images,
+        "origin_urls": images,
+        "originalUrls": images,
+        "original_urls": images,
+        "media": images,
+        "mediaList": images,
+        "media_list": images,
         "data": images,
+    }
+
+    payload = {
+        "status": 1,
+        "gate": 1,
+        "notetype": note["notetype"],
+        "nt": note["nt"],
+        "url": media_url,
+        "note_url": note_url,
+        "source_url": note_url,
+        "title": note["title"],
+        "author": note["author"],
+        **image_aliases,
         "first_image": first_image,
         "image_url": first_image,
         "pic_url": first_image,
-
+        "img_url": first_image,
+        "photo_url": first_image,
         "raw_images": raw_images,
         "raw_first_image": raw_images[0] if raw_images else "",
         "video": note["video"],
@@ -284,6 +310,11 @@ def xhszshq_gate(
         "livephoto": [],
         "image_count": len(images),
         "parser": note["parser"],
-        "message": "gate-json-media-proxy-v7" if images or note["video"] else "parse_failed_no_media",
+        "message": "gate-json-media-proxy-v8" if images or note["video"] else "parse_failed_no_media",
     }
+
+    logger.info(
+        "XHS_GATE_RESULT nt=%s image_count=%s parser=%s source=%s",
+        note["nt"], len(images), note["parser"], note_url,
+    )
     return JSONResponse(payload)
