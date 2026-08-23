@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: iphone-media-downloader
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: DOWNLOAD_API_KEY
+        sync: false
+      - key: MAX_DOWNLOAD_MB
+        value: 250
+      - key: DOWNLOAD_TIMEOUT_SECONDS
+        value: 180
