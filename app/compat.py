@@ -71,8 +71,10 @@ def inspect_note(url: str) -> dict:
         else:
             thumbs = info.get("thumbnails") or []
             images = [str(x.get("url")) for x in thumbs if isinstance(x, dict) and x.get("url")]
-            result["notetype"] = "image"
-            result["nt"] = "image"
+            # 原捷徑的「原圖保存」分支判斷 nt 是否包含 pic，
+            # 因此圖片筆記必須使用 pic，而不是 image。
+            result["notetype"] = "pic"
+            result["nt"] = "pic"
             result["images"] = images
     except Exception:
         return result
@@ -109,6 +111,6 @@ def xhszshq_gate(
         "videos": [note["video"]] if note["video"] else [],
         "live": [],
         "livephoto": [],
-        "message": "gate-json-media-detect",
+        "message": "gate-json-media-detect-v2",
     }
     return JSONResponse(payload)
