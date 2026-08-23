@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from urllib.request import Request as URLRequest, urlopen
 
 import chompjs
+from fastapi.responses import JSONResponse
 
 from . import compat9 as locked
 from . import compat7 as base
@@ -17,6 +19,26 @@ app = locked.app
 # 3) Live Photo 配對
 # compat10 只在上述流程「完全沒有取得任何媒體」時，補一條新版高清影片解析。
 _locked_inspect = base.inspect_one_url_only
+
+# 捷徑「高清保存」使用的是 eigl，而普通原圖保存使用 gigl。
+# 不改任何圖片解析/圖片 URL，只把已驗證成功的無浮水印原圖清單同步提供到 eigl。
+_locked_success_payload = base._success_payload
+
+
+def _success_payload_with_eigl(note_url: str, scoped_images: list[str], scoped_videos: list[str], scoped_parser: str):
+    response = _locked_success_payload(note_url, scoped_images, scoped_videos, scoped_parser)
+    try:
+        payload = json.loads(response.body.decode("utf-8"))
+    except Exception:
+        return response
+    if payload.get("nt") == "pic":
+        payload["eigl"] = list(payload.get("gigl") or payload.get("images") or [])
+    else:
+        payload.setdefault("eigl", [])
+    return JSONResponse(payload)
+
+
+base._success_payload = _success_payload_with_eigl
 
 
 def _clean_hd_video_url(value) -> str:
