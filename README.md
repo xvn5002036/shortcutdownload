@@ -1,72 +1,458 @@
-# iPhone 捷徑媒體下載器
+# 小紅書助手 Pro｜自架後端
 
-把 Facebook、Instagram、X、Bilibili、YouTube、小紅書的**公開**內容網址從 iPhone 分享至「捷徑」，由自架服務處理後存回手機。請只下載自己擁有或已獲授權的內容。
+這是一套為 iPhone「捷徑」設計的小紅書媒體處理後端，主要提供公開筆記的媒體解析、原圖／影片／Live Photo 資料取得、高清保存、筆記資訊，以及啟用碼與裝置驗證功能。
 
-## 架構
+> 本專案僅供個人、自有內容或已取得授權的內容使用。請遵守平台條款、著作權與所在地法律。
 
-GitHub 保存程式碼；Render（或任何支援 Docker 的主機）執行下載服務。GitHub Pages 只能放靜態網頁，無法執行 yt-dlp、gallery-dl 或 FFmpeg，因此不能單獨完成下載。
+---
 
-## 一、放到 GitHub
+## 專案用途
 
-1. 在 GitHub 建立新的私人 repository。
-2. 將本資料夾全部檔案推送到該 repository。
-3. 不要把帳號密碼、瀏覽器 Cookie 或 `.env` 上傳至 GitHub。
+目前後端主要配合「小紅書助手 Pro」捷徑使用。
 
-## 二、部署服務（Render 範例）
+支援的核心流程：
 
-1. 登入 Render，選 **New > Blueprint**，連接上述 GitHub repository。
-2. Render 會讀取 `render.yaml`，建立 Docker Web Service。
-3. 部署完成後，記下網址，例如 `https://iphone-media-downloader.onrender.com`。
-4. 第一次建立 Blueprint 時，Render 會要求填入 `DOWNLOAD_API_KEY`。請自行輸入至少 32 個字元並另外保存；這組值只放在 Render 和你的 iPhone，不要提交到 GitHub。若服務已經建立，請到服務的 **Environment** 頁面手動新增或修改它。
-5. 瀏覽 `https://你的網址/health`，看到 `{"status":"ok"}` 即完成。
+- 普通照片／原圖
+- 普通影片
+- Live Photo／實況圖
+- 高清保存
+- 筆記標題、描述、作者資訊
+- 啟用碼驗證
+- 裝置綁定
+- API 使用紀錄
 
-請勿直接雙擊 `app/index.html` 測試。該檔案只是服務提供的介面，直接開啟時沒有後端 API。部署後請開啟 Render 的 HTTPS 網址；網頁測試時把 Render 的 `DOWNLOAD_API_KEY` 填入「API 金鑰」欄位。
+目前穩定版本的原則是：
 
-免費主機可能休眠、啟動慢或限制檔案大小；大量／長時間實況建議使用付費方案或自己的 VPS。
+> 一個網址只處理該網址對應的單篇小紅書筆記，不混入留言、推薦內容或其他筆記媒體。
 
-## 三、建立 iPhone 捷徑
+---
 
-建立新捷徑，命名「下載社群媒體」，並在捷徑詳細資料中開啟「在分享表單中顯示」，接收類型選 **URL**。依序加入：
+## 系統架構
 
-1. **取得「捷徑輸入」中的 URL**。
-2. **字典**，加入文字鍵 `url`，值設為上一步的 URL。
-3. **取得 URL 的內容**：
-   - URL：`https://你的服務網址/api/download`
-   - 方法：`POST`
-   - 標頭：`X-API-Key` = Render 中的 `DOWNLOAD_API_KEY`
-   - 要求本文：`JSON`
-   - JSON：選擇上一步的字典
-4. **儲存檔案**，輸入為「URL 的內容」，開啟「詢問儲存位置」。
-5. 可再加入 **顯示通知**：「下載完成」。
-
-使用時在 Facebook、Instagram、X、Bilibili、YouTube 或小紅書對公開內容點「分享」→「更多」→「下載社群媒體」。單一媒體會直接儲存；多張圖片／多個媒體會收到 ZIP，存到「檔案」App 後點一下即可解壓縮。
-
-> 「儲存到照片」對 ZIP、某些容器格式會失敗，因此預設使用「儲存檔案」。若只下載 MP4/JPG，可把第 4 步換成「儲存到照片相簿」。
-
-## 支援與限制
-
-- 預期支援公開的 Facebook 影片／Reels／照片、Instagram 貼文／Reels，以及 X 圖片／影片。
-- 支援公開的 Bilibili 一般影片與 YouTube 一般影片；預設只處理分享的單一影片，不會下載整份播放清單。
-- 支援小紅書公開影片與圖文筆記；請分享單篇筆記網址，`/explore` 首頁本身不是下載項目。
-- 小紅書公開直播僅作試驗性處理；官方解析器目前沒有直播專用支援，登入／App 驗證或未直接提供串流的直播不能下載。
-- Stories 常要求登入，公開服務不會接收你的 Cookie 或帳密，因此不保證可下載。
-- Bilibili 大會員／付費／地區限制內容，以及 YouTube 會員／年齡限制／私人內容不支援。
-- 已結束且網站仍提供回放的實況可嘗試；正在直播、DRM、付費、私人或地區限制內容不支援。
-- 社群網站會改版；部署時不要永久鎖死 `yt-dlp` 與 `gallery-dl` 版本，重新部署可取得新版解析器。
-- Docker 映像已包含 Deno 與 yt-dlp 的 EJS 元件，用來處理 YouTube 的 JavaScript 播放驗證。
-- API 只接受上述六個平台的 HTTPS 網址，並有限時與總檔案大小限制。
-
-## 本機測試
-
-```powershell
-docker build -t iphone-media-downloader .
-docker run --rm -p 8080:8080 -e DOWNLOAD_API_KEY=請換成自己的長金鑰 iphone-media-downloader
+```text
+iPhone 捷徑
+    ↓
+Render Web Service
+    ↓
+FastAPI / Python
+    ↓
+媒體解析與轉送
+    ↓
+Supabase PostgreSQL
+    ├─ licenses
+    ├─ devices
+    └─ api_logs
 ```
 
-```powershell
-Invoke-WebRequest -Method Post -Uri http://localhost:8080/api/download `
-  -Headers @{"X-API-Key"="請換成自己的長金鑰"} `
-  -ContentType "application/json" `
-  -Body '{"url":"https://x.com/.../status/..."}' `
-  -OutFile download.bin
+### GitHub
+
+GitHub 保存程式碼與版本紀錄。
+
+### Render
+
+Render 負責執行 FastAPI 後端與 FFmpeg 等伺服器端功能。
+
+目前正式服務網址：
+
+```text
+https://shortcutdownload.onrender.com
 ```
+
+### Supabase
+
+Supabase PostgreSQL 用來保存啟用碼、裝置綁定與 API 紀錄。
+
+資料表：
+
+```text
+licenses
+devices
+api_logs
+```
+
+---
+
+## 主要 API
+
+### 首頁
+
+```http
+GET /
+```
+
+### 健康檢查
+
+```http
+GET /health
+```
+
+正常情況會回傳服務狀態。
+
+### 小紅書捷徑入口
+
+```http
+GET /xhszshq
+```
+
+這是目前捷徑主要使用的相容介面。
+
+### 啟用碼驗證
+
+```http
+POST /api/verify
+```
+
+用於啟用碼、裝置與平台驗證。
+
+### 通用下載 API
+
+```http
+POST /api/download
+```
+
+### 圖片代理
+
+```http
+GET /media/image?url=<encoded-url>
+```
+
+### 影片代理
+
+```http
+GET /media/video?url=<encoded-url>
+```
+
+影片輸出會經過 FFmpeg 重新封裝，以提高 iPhone「照片」App 的相容性。
+
+---
+
+## 捷徑相容欄位
+
+後端為了維持既有捷徑相容性，會保留以下主要欄位。
+
+### 類型判斷
+
+```text
+notetype
+nt
+```
+
+常見值包含：
+
+```text
+video
+pic
+livepic
+```
+
+### 普通／原圖
+
+```text
+gigl
+```
+
+### 高清圖片
+
+```text
+eigl
+```
+
+### Live Photo
+
+```text
+ligl
+```
+
+每一組 Live Photo 通常包含：
+
+```json
+{
+  "cover": "...",
+  "livevideo": "..."
+}
+```
+
+### Live 筆記中的普通圖片
+
+```text
+nigl
+```
+
+### 筆記資訊
+
+```text
+title
+desc
+author
+```
+
+另外保留部分相容別名：
+
+```text
+description
+note_title
+note_desc
+nickname
+```
+
+---
+
+## 啟用碼系統
+
+後端內建授權與裝置管理功能。
+
+### licenses
+
+保存：
+
+- 啟用碼
+- 狀態
+- 最大裝置數
+- 建立時間
+- 到期時間
+- 備註
+
+### devices
+
+保存：
+
+- 啟用碼對應裝置
+- device_id
+- 平台
+- 第一次使用時間
+- 最後使用時間
+
+### api_logs
+
+保存 API 驗證與使用紀錄。
+
+> 請勿把資料庫密碼、API 密鑰、Cookie、Apple 憑證或其他秘密資訊提交到 GitHub。
+
+---
+
+## 環境變數
+
+至少需要設定：
+
+```text
+DATABASE_URL
+```
+
+目前正式環境使用 Supabase PostgreSQL Session Pooler。
+
+Render 等 IPv4 主機建議使用 Supabase 的 Session Pooler，而不是只支援 IPv6 的 Direct Connection。
+
+連線格式範例：
+
+```text
+postgresql://USER:PASSWORD@HOST:5432/postgres
+```
+
+請把實際密碼只放在 Render Environment Variables，不要寫進程式碼或 README。
+
+---
+
+## Render 部署
+
+專案使用 Docker 部署。
+
+主要執行方式：
+
+```text
+uvicorn app.compat11:app --host 0.0.0.0 --port $PORT
+```
+
+Docker 環境包含：
+
+- Python
+- FastAPI
+- Uvicorn
+- FFmpeg
+- yt-dlp
+- gallery-dl
+- Deno
+- PostgreSQL driver
+
+Render 設定 `DATABASE_URL` 後，服務啟動時會連接 PostgreSQL。
+
+---
+
+## 資料庫
+
+目前 PostgreSQL 主要資料表：
+
+```sql
+licenses
+devices
+api_logs
+```
+
+後端啟動時會檢查並建立必要資料表。
+
+正式環境目前使用 Supabase，因此即使未來更換 Render，也可以繼續沿用同一套授權資料庫。
+
+---
+
+## 小紅書媒體處理原則
+
+### 圖片
+
+優先取得同一篇筆記中的原始圖片來源，避免使用帶浮水印或不必要縮圖版本。
+
+### 影片
+
+優先處理同一篇筆記中的原始影片來源。
+
+回傳到 iPhone 前可透過 FFmpeg 重新封裝為標準 MP4，以提高捷徑與照片 App 相容性。
+
+### Live Photo
+
+後端負責取得同一篇筆記內正確配對的封面與 Live Video。
+
+Live Photo 最終在 iPhone 上的建立／寫入仍可能依賴 iOS 原生功能或相容 App。
+
+### 高清保存
+
+高清圖片使用：
+
+```text
+eigl
+```
+
+請勿任意改名，否則既有捷徑會無法讀取。
+
+---
+
+## 穩定功能請勿隨意修改
+
+目前以下流程已視為穩定：
+
+1. 普通照片／原圖
+2. 普通影片
+3. Live Photo／實況圖
+4. 高清保存
+5. 筆記資訊
+
+開發新功能時，建議採用新的相容層或獨立 endpoint，不要直接改壞既有媒體欄位與輸出格式。
+
+---
+
+## 專案主要檔案
+
+```text
+app/
+├─ compat.py
+├─ compat7.py
+├─ compat8.py
+├─ compat9.py
+├─ compat10.py
+├─ compat11.py
+├─ db.py
+├─ main.py
+├─ admin.html
+├─ index.html
+└─ join.html
+
+Dockerfile
+requirements.txt
+README.md
+```
+
+目前 Docker 正式入口使用：
+
+```text
+app.compat11:app
+```
+
+`compat11` 的設計原則是沿用已穩定的下載流程，只補充筆記 metadata，不重寫已穩定媒體解析。
+
+---
+
+## 管理頁面
+
+部署完成後可使用：
+
+```text
+https://你的網域/admin
+```
+
+以及：
+
+```text
+https://你的網域/join
+```
+
+實際管理權限與驗證方式以目前後端設定為準。
+
+---
+
+## 本機啟動
+
+### Docker
+
+```bash
+docker build -t shortcutdownload .
+docker run --rm -p 8080:8080 \
+  -e DATABASE_URL="你的 PostgreSQL 連線字串" \
+  shortcutdownload
+```
+
+瀏覽：
+
+```text
+http://localhost:8080/health
+```
+
+---
+
+## 安全注意事項
+
+請勿提交以下內容：
+
+- PostgreSQL 密碼
+- Supabase database password
+- Render secret environment variables
+- Apple Developer 憑證
+- `.p12`
+- Provisioning Profile
+- API Key
+- Cookie
+- 使用者帳號密碼
+
+如果秘密資訊曾公開或提交到 repository，請立即更換／撤銷。
+
+---
+
+## 使用限制
+
+- 僅處理可公開存取或你有權使用的內容。
+- 不保證平台改版後所有解析永遠有效。
+- 小紅書可能調整頁面結構、CDN、驗證方式或媒體格式。
+- Render 免費服務可能休眠或有資源限制。
+- Supabase 免費方案也可能有流量、容量或閒置限制。
+- 大型影片與大量下載建議使用更高規格主機。
+
+---
+
+## 目前狀態
+
+```text
+GitHub        ✅ 程式碼版本管理
+Render        ✅ FastAPI 後端
+Supabase      ✅ PostgreSQL
+照片原圖      ✅
+普通影片      ✅
+Live Photo   ✅ 媒體配對資料
+高清保存      ✅
+筆記資訊      ✅
+啟用碼系統    ✅
+裝置綁定      ✅
+```
+
+---
+
+## Disclaimer
+
+本專案為個人技術研究與自架工具，不隸屬於、未獲得小紅書或其他第三方平台官方背書。
+
+使用者應自行確認對下載、保存、轉換或再利用內容具有合法權利。
