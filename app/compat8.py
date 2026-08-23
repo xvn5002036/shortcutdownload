@@ -15,13 +15,12 @@ logger = logging.getLogger("xhs.compat8")
 
 
 def _raw_same_note_image(value) -> str:
-    """把目前文章 exact imageList 的展示 URL 轉成同一張圖片的無水印原圖 URL。"""
+    """已驗證成功的圖片無水印原圖邏輯；不要改動。"""
     if not isinstance(value, str):
         return ""
     value = base.clean_url(value)
     if not base._allowed_scoped_image(value):
         return ""
-
     try:
         p = urlsplit(value)
         path = p.path
@@ -31,136 +30,114 @@ def _raw_same_note_image(value) -> str:
             media_id = m.group(2).split("!", 1)[0]
             if media_id:
                 return f"https://ci.xiaohongshu.com/{prefix}/{media_id}?imageView2/format/jpeg"
-
         last = (path.rsplit("/", 1)[-1] or "").split("!", 1)[0]
         if last and len(last) >= 16 and all(ch.isalnum() or ch in "_-" for ch in last):
             return f"https://ci.xiaohongshu.com/{last}?imageView2/format/jpeg"
     except Exception:
         pass
-
     return value
 
 
-# 已驗證成功的圖片原圖邏輯：保持不變。
+# 圖片部分保持原樣。
 base._clean_image = _raw_same_note_image
 
 
-def _is_explicit_original_video_path(path: tuple[str, ...]) -> bool:
-    """只接受文章資料明確標示為原始/主影片來源的欄位。"""
-    p = ".".join(path).lower()
-    blocked = ("watermark", "water_mark", "wmurl", "wm_url", "marked", "share", "ogvideo", "og:video")
-    if any(x in p for x in blocked):
-        return False
-    explicit = (
-        "masterurl", "master_url",
-        "originvideo", "origin_video",
-        "originalvideo", "original_video",
-        "originurl", "origin_url",
-        "originalurl", "original_url",
-        "sourceurl", "source_url",
-    )
-    return any(x in p for x in explicit)
+ORIGIN_VIDEO_KEY_NAMES = {
+    "originvideokey",
+    "origin_video_key",
+    "originalvideokey",
+    "original_video_key",
+}
 
 
-def _original_video_score(path: tuple[str, ...], value: str) -> int:
-    p = ".".join(path).lower()
-    score = 0
-    if "masterurl" in p or "master_url" in p:
-        score += 2000
-    if "h264" in p:
-        score += 500
-    if "h265" in p or "hevc" in p:
-        score += 350
-    if "origin" in p or "original" in p:
-        score += 900
-    if "source" in p:
-        score += 700
-    if "backup" in p:
-        score -= 100
-    if value.lower().startswith("https://"):
-        score += 20
-    return score
+def _origin_video_key_from_target(obj, depth: int = 0) -> str:
+    """只在目前 exact note 物件內尋找平台保存的原始影片 key。
 
-
-def _collect_original_video_urls(obj, out: list[tuple[int, int, str, str]], path: tuple[str, ...] = (), depth: int = 0) -> None:
-    if depth > 18 or len(out) >= 120:
-        return
-    if isinstance(obj, str):
-        value = base.clean_url(obj)
-        if base._allowed_scoped_video(value) and _is_explicit_original_video_path(path):
-            path_text = ".".join(path)
-            out.append((_original_video_score(path, value), len(out), value, path_text))
-        return
+    masterUrl/一般 stream 可能已燒入右下角小紅書浮水印，因此不再把它視為原檔。
+    """
+    if depth > 18:
+        return ""
     if isinstance(obj, dict):
         for key, value in obj.items():
-            if isinstance(value, (dict, list, str)):
-                _collect_original_video_urls(value, out, path + (str(key),), depth + 1)
-        return
-    if isinstance(obj, list):
-        for index, value in enumerate(obj[:300]):
-            if isinstance(value, (dict, list, str)):
-                _collect_original_video_urls(value, out, path + (str(index),), depth + 1)
+            normalized = str(key).replace("-", "_").lower()
+            if normalized in ORIGIN_VIDEO_KEY_NAMES and isinstance(value, str):
+                value = base.clean_url(value).strip()
+                if value and not value.startswith(("http://", "https://")):
+                    return value.lstrip("/")
+        for value in obj.values():
+            if isinstance(value, (dict, list)):
+                found = _origin_video_key_from_target(value, depth + 1)
+                if found:
+                    return found
+    elif isinstance(obj, list):
+        for value in obj[:300]:
+            if isinstance(value, (dict, list)):
+                found = _origin_video_key_from_target(value, depth + 1)
+                if found:
+                    return found
+    return ""
 
 
-def _best_original_videos_from_target(target) -> tuple[list[str], list[str]]:
-    ranked: list[tuple[int, int, str, str]] = []
-    _collect_original_video_urls(target, ranked)
-    if not ranked:
-        return [], []
-    best_by_url: dict[str, tuple[int, int, str, str]] = {}
-    for row in ranked:
-        old = best_by_url.get(row[2])
-        if old is None or row[0] > old[0]:
-            best_by_url[row[2]] = row
-    ordered = sorted(best_by_url.values(), key=lambda x: (-x[0], x[1]))
-    return [x[2] for x in ordered], [x[3] for x in ordered]
+def _origin_video_url_from_target(target) -> str:
+    key = _origin_video_key_from_target(target)
+    if not key:
+        return ""
+    # XHS 舊/原始影片資源：originVideoKey 對應 sns-video-bd CDN 原檔。
+    return f"https://sns-video-bd.xhscdn.com/{key}"
 
 
-def _videos_from_exact_note_obj(obj, nid: str) -> tuple[list[str], list[str]]:
+def _origin_video_from_exact_note_obj(obj, nid: str) -> str:
     if not isinstance(obj, (dict, list)):
-        return [], []
+        return ""
     seen = set()
 
     def walk(value, depth=0):
         if depth > 14:
-            return [], []
+            return ""
         oid = id(value)
         if oid in seen:
-            return [], []
+            return ""
         seen.add(oid)
+
         if isinstance(value, dict):
             if base._obj_note_id(value) == nid:
-                return _best_original_videos_from_target(value)
+                return _origin_video_url_from_target(value)
+
             note = value.get("note")
             if isinstance(note, dict) and base._obj_note_id(note) == nid:
-                return _best_original_videos_from_target(note)
+                return _origin_video_url_from_target(note)
+
             direct = value.get(nid)
             if isinstance(direct, dict):
                 target = direct.get("note") if isinstance(direct.get("note"), dict) else direct
                 if base._obj_note_id(target) in {"", nid}:
-                    found, paths = _best_original_videos_from_target(target)
+                    found = _origin_video_url_from_target(target)
                     if found:
-                        return found, paths
+                        return found
+
             for child in value.values():
                 if isinstance(child, (dict, list)):
-                    found, paths = walk(child, depth + 1)
+                    found = walk(child, depth + 1)
                     if found:
-                        return found, paths
+                        return found
+
         elif isinstance(value, list):
             for child in value[:500]:
                 if isinstance(child, (dict, list)):
-                    found, paths = walk(child, depth + 1)
+                    found = walk(child, depth + 1)
                     if found:
-                        return found, paths
-        return [], []
+                        return found
+        return ""
 
     return walk(obj)
 
 
-def _same_url_exact_note_original_videos(resolved: str) -> tuple[list[str], str]:
+def _same_url_exact_note_origin_video(resolved: str) -> tuple[list[str], str]:
+    """網址 -> exact noteId -> originVideoKey -> 原始影片 URL。"""
     nid = base._note_id_from_url(resolved)
     if not nid:
         return [], "video_note_id_missing"
+
     try:
         req = URLRequest(resolved, headers={
             "User-Agent": base.UA,
@@ -177,6 +154,7 @@ def _same_url_exact_note_original_videos(resolved: str) -> tuple[list[str], str]
         raw,
         html.unescape(raw).replace("\\u002F", "/").replace("\\/", "/").replace("\\u0026", "&"),
     ]
+
     for variant_index, text in enumerate(variants):
         positions = [m.start() for m in re.finditer(re.escape(nid), text, flags=re.I)]
         for pos in positions[:30]:
@@ -195,34 +173,36 @@ def _same_url_exact_note_original_videos(resolved: str) -> tuple[list[str], str]
                         obj = chompjs.parse_js_object(candidate)
                     except Exception:
                         continue
-                    videos, paths = _videos_from_exact_note_obj(obj, nid)
-                    if videos:
-                        logger.info("XHS_ORIGINAL_VIDEO_SELECTED note=%s field=%s", nid, paths[0] if paths else "unknown")
-                        return [videos[0]], f"same-url-exact-note-original-field-v{variant_index + 1}"
+                    origin_url = _origin_video_from_exact_note_obj(obj, nid)
+                    if origin_url and base._allowed_scoped_video(origin_url):
+                        logger.info("XHS_ORIGIN_VIDEO_KEY_SELECTED note=%s", nid)
+                        return [origin_url], f"same-url-exact-note-originVideoKey-v{variant_index + 1}"
 
-    logger.info("XHS_ORIGINAL_VIDEO_NOT_EXPOSED note=%s", nid)
-    return [], "same_url_exact_note_original_video_not_exposed"
+    logger.info("XHS_ORIGIN_VIDEO_KEY_NOT_EXPOSED note=%s", nid)
+    return [], "same_url_exact_note_originVideoKey_not_exposed"
 
 
 _original_inspect_one_url_only = base.inspect_one_url_only
 
 
-def _inspect_one_url_only_video_first(input_url: str):
+def _inspect_one_url_only_origin_video_first(input_url: str):
     resolved = base.resolve_url(input_url) or base.normalize_xhs_url(input_url)
     if resolved:
-        videos, reason = _same_url_exact_note_original_videos(resolved)
+        videos, reason = _same_url_exact_note_origin_video(resolved)
         if videos:
             return resolved, [], videos, reason
 
-    # 圖片流程保留 compat7 原本邏輯；若 compat7 只找到一般影片 stream，直接丟棄，
-    # 不再把它冒充『原版無水印影片』回給捷徑。
+    # 圖片仍走既有成功流程。
     fallback_resolved, fallback_images, fallback_videos, fallback_reason = _original_inspect_one_url_only(input_url)
     if fallback_images:
         return fallback_resolved, fallback_images, fallback_videos, fallback_reason
+
+    # 只有 masterUrl / 一般 stream 時，一律拒絕回傳，避免右下角浮水印影片。
     if fallback_videos:
-        logger.info("XHS_WATERMARK_FALLBACK_BLOCKED source=%s", fallback_resolved or resolved or input_url)
-        return fallback_resolved, [], [], f"{reason}+watermark_fallback_blocked"
+        logger.info("XHS_PROCESSED_VIDEO_BLOCKED source=%s", fallback_resolved or resolved or input_url)
+        return fallback_resolved, [], [], f"{reason}+processed_video_blocked"
+
     return fallback_resolved, [], [], f"{reason}+{fallback_reason}"
 
 
-base.inspect_one_url_only = _inspect_one_url_only_video_first
+base.inspect_one_url_only = _inspect_one_url_only_origin_video_first
