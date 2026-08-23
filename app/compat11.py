@@ -198,3 +198,7 @@ def xhszshq_gate_note_save(
     payload["nickname"] = payload.get("author") or ""
     payload["message_note_save"] = "ok-note-save-metadata-v1"
     return JSONResponse(payload)
+
+
+# 最後才接管管理後台登入，完全不改上面的媒體與捷徑相容流程。
+from . import admin_persist as _admin_persist  # noqa: E402,F401
