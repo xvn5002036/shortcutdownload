@@ -6,9 +6,28 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-USE_POSTGRES = DATABASE_URL.startswith("postgres://") or DATABASE_URL.startswith("postgresql://")
+RAW_DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_POSTGRES = RAW_DATABASE_URL.startswith("postgres://") or RAW_DATABASE_URL.startswith("postgresql://")
+
+
+def normalize_database_url(value: str) -> str:
+    """Render Postgres 對外連線要求 TLS；若連線字串未指定則自動補 sslmode=require。"""
+    if not value:
+        return value
+    if value.startswith("postgres://"):
+        value = "postgresql://" + value[len("postgres://"):]
+    try:
+        parts = urlsplit(value)
+        query = dict(parse_qsl(parts.query, keep_blank_values=True))
+        query.setdefault("sslmode", "require")
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+    except Exception:
+        return value
+
+
+DATABASE_URL = normalize_database_url(RAW_DATABASE_URL) if USE_POSTGRES else ""
 
 if USE_POSTGRES:
     import psycopg
@@ -16,6 +35,10 @@ if USE_POSTGRES:
 else:
     DB_PATH = Path(os.getenv("XHS_DB_PATH", Path(__file__).with_name("xhs.db")))
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+
+def database_backend() -> str:
+    return "postgres" if USE_POSTGRES else "sqlite"
 
 
 def utcnow() -> datetime:
@@ -29,10 +52,13 @@ def iso(dt: datetime | None) -> str | None:
 @contextmanager
 def connect():
     if USE_POSTGRES:
-        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=False)
+        conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=False, connect_timeout=10)
         try:
             yield conn
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
     else:
@@ -42,6 +68,9 @@ def connect():
         try:
             yield conn
             conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
 
