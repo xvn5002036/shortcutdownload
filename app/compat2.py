@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import tempfile
+from pathlib import Path
 from urllib.parse import quote, urlparse
 from urllib.request import Request as URLRequest, urlopen
 
@@ -71,6 +74,40 @@ def dedupe_live_videos(values: list[str]) -> list[str]:
     return result
 
 
+def _remux_to_ios_mp4(data: bytes) -> bytes:
+    """只重新封裝容器，不重編碼畫面/聲音，也不加入任何浮水印。
+
+    originVideoKey 指向的原始資源雖能下載，但有些檔案缺少 iOS Photos 可直接匯入的
+    MP4 容器/faststart 結構。這裡使用 ffmpeg -c copy 重新封裝成標準 MP4。
+    """
+    if not data:
+        return data
+    try:
+        with tempfile.TemporaryDirectory(prefix="xhs-video-") as temp_dir:
+            src = Path(temp_dir) / "source.bin"
+            dst = Path(temp_dir) / "xhs-original-video.mp4"
+            src.write_bytes(data)
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(src),
+                    "-map", "0:v:0?", "-map", "0:a:0?",
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    str(dst),
+                ],
+                capture_output=True,
+                timeout=90,
+                check=False,
+            )
+            if result.returncode == 0 and dst.exists() and dst.stat().st_size > 0:
+                return dst.read_bytes()
+    except Exception:
+        pass
+    # 若來源本身已是正常 MP4 或 ffmpeg 無法辨識，仍保留原始資料作兜底。
+    return data
+
+
 @app.get("/media/video")
 def media_video(url: str = Query(...)):
     if not is_allowed_remote_video(url):
@@ -84,21 +121,21 @@ def media_video(url: str = Query(...)):
         with urlopen(req, timeout=40) as resp:
             data = resp.read(120 * 1024 * 1024)
             upstream_type = resp.headers.get_content_type() or ""
-            # originVideoKey 原始資源 URL 常沒有 .mp4 副檔名；
-            # 小紅書 CDN 也可能回 application/octet-stream。
-            # iOS 捷徑「取得 URL 內容」因此會下載完成後無法把結果辨識成影片。
-            # 這裡固定以 MP4 回傳並提供 .mp4 檔名；不轉碼、不加工影片內容。
             if upstream_type and not (
                 upstream_type.startswith("video/")
                 or upstream_type in {"application/octet-stream", "binary/octet-stream"}
             ):
                 raise HTTPException(status_code=502, detail="remote resource is not a video")
+
+            # 來源仍然是同一支 originVideoKey 無水印原始影片；
+            # 只做 -c copy 容器重新封裝，讓 iOS 捷徑/照片能辨識並真正寫入相簿。
+            mp4_data = _remux_to_ios_mp4(data)
             return Response(
-                content=data,
+                content=mp4_data,
                 media_type="video/mp4",
                 headers={
                     "Cache-Control": "public, max-age=1800",
-                    "Content-Disposition": 'inline; filename="xhs-original-video.mp4"',
+                    "Content-Disposition": 'attachment; filename="xhs-original-video.mp4"',
                     "X-Content-Type-Options": "nosniff",
                 },
             )
