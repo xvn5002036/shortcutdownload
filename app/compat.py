@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import html as html_lib
+import html
 import json
 import re
 import subprocess
@@ -18,6 +18,8 @@ app.router.routes[:] = [
     if getattr(route, "path", None) != "/xhszshq"
 ]
 
+UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
+
 
 def normalize_xhs_url(value: str) -> str:
     value = (value or "").strip()
@@ -32,146 +34,114 @@ def normalize_xhs_url(value: str) -> str:
     return value
 
 
-def _collect_http_urls(value) -> list[str]:
-    urls: list[str] = []
-    if isinstance(value, str):
-        if value.startswith(("http://", "https://")):
-            urls.append(value)
-    elif isinstance(value, dict):
-        for item in value.values():
-            urls.extend(_collect_http_urls(item))
-    elif isinstance(value, list):
-        for item in value:
-            urls.extend(_collect_http_urls(item))
-    return urls
+def resolve_url(value: str) -> str:
+    value = normalize_xhs_url(value)
+    if not value:
+        return value
+    try:
+        req = Request(value, headers={"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"})
+        with urlopen(req, timeout=15) as resp:
+            return resp.geturl() or value
+    except Exception:
+        return value
 
 
-def _looks_like_image(url: str) -> bool:
-    lower = url.lower().split("?", 1)[0]
-    if lower.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif")):
-        return True
-    return any(token in url.lower() for token in ("image", "img", "sns-img", "xhscdn", "sns-webpic"))
-
-
-def _dedupe_images(urls: list[str]) -> list[str]:
-    images: list[str] = []
+def dedupe(items: list[str]) -> list[str]:
     seen = set()
-    for raw in urls:
-        item = html_lib.unescape(raw).replace("\\u002F", "/").replace("\\/", "/")
-        if item.startswith("//"):
-            item = "https:" + item
-        if item.startswith("http") and _looks_like_image(item) and item not in seen:
-            seen.add(item)
-            images.append(item)
-    return images
+    result = []
+    for item in items:
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
 
 
-def inspect_with_page_html(url: str) -> dict:
-    fallback = {"title": "", "author": "", "images": [], "video": "", "final_url": url}
+def clean_url(value: str) -> str:
+    value = html.unescape(value)
+    value = value.replace("\\u002F", "/").replace("\\/", "/")
+    value = value.replace("\\u0026", "&")
+    return value.strip('"\' ')
+
+
+def looks_like_image(value: str) -> bool:
+    low = value.lower()
+    if not low.startswith(("http://", "https://")):
+        return False
+    host = (urlparse(value).hostname or "").lower()
+    if any(x in host for x in ("xhscdn", "sns-img", "qpic", "alicdn")):
+        return True
+    path = urlparse(value).path.lower()
+    return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif"))
+
+
+def extract_images_from_html(url: str) -> tuple[str, list[str]]:
     try:
-        request = Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
-                "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-        )
-        with urlopen(request, timeout=20) as response:
-            fallback["final_url"] = response.geturl()
-            text = response.read(3_000_000).decode("utf-8", "ignore")
-
-        # 小紅書頁面中的圖片網址通常存在 JSON/HTML script 內。
-        candidates = re.findall(
-            r'https?(?::|\\u003A)?(?:\\/|/){2}[^"\'<>\\\s]+',
-            text,
-            flags=re.I,
-        )
-        # 也抓被 JSON escape 的 CDN URL。
-        candidates += re.findall(
-            r'https?:\\/\\/[^"\'<>\s]+',
-            text,
-            flags=re.I,
-        )
-        fallback["images"] = _dedupe_images(candidates)
-
-        title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)', text, re.I)
-        if not title_match:
-            title_match = re.search(r'<title>(.*?)</title>', text, re.I | re.S)
-        if title_match:
-            fallback["title"] = html_lib.unescape(re.sub(r"\s+", " ", title_match.group(1))).strip()
-
-        video_patterns = [
-            r'"masterUrl"\s*:\s*"([^"]+)"',
-            r'"originVideoKey"\s*:\s*"([^"]+)"',
-            r'"url"\s*:\s*"(https?:\\/\\/[^" ]+\.mp4[^" ]*)"',
-        ]
-        for pattern in video_patterns:
-            match = re.search(pattern, text, re.I)
-            if match:
-                fallback["video"] = html_lib.unescape(match.group(1)).replace("\\u002F", "/").replace("\\/", "/")
-                break
+        req = Request(url, headers={
+            "User-Agent": UA,
+            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+            "Referer": "https://www.xiaohongshu.com/",
+        })
+        with urlopen(req, timeout=20) as resp:
+            final_url = resp.geturl() or url
+            raw = resp.read(4 * 1024 * 1024).decode("utf-8", errors="ignore")
     except Exception:
-        pass
-    return fallback
+        return url, []
+
+    candidates: list[str] = []
+    decoded = html.unescape(raw)
+    variants = [raw, decoded, decoded.replace("\\u002F", "/").replace("\\/", "/").replace("\\u0026", "&")]
+
+    patterns = [
+        r'https?:\\?/\\?/[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+',
+        r'"(?:urlDefault|urlPre|url|imageUrl|image_url)"\s*:\s*"([^"]+)"',
+    ]
+    for text in variants:
+        for pattern in patterns:
+            for match in re.finditer(pattern, text):
+                value = match.group(1) if match.lastindex else match.group(0)
+                value = clean_url(value)
+                if looks_like_image(value):
+                    candidates.append(value)
+
+    return final_url, dedupe(candidates)
 
 
-def inspect_with_gallery_dl(url: str) -> dict:
-    fallback = {"title": "", "author": "", "images": []}
-    try:
-        proc = subprocess.run(
-            ["gallery-dl", "--dump-json", url],
-            capture_output=True,
-            text=True,
-            timeout=45,
-            check=False,
-        )
-        if proc.returncode != 0 or not proc.stdout.strip():
-            return fallback
-        parsed_items = []
-        text = proc.stdout.strip()
+def inspect_with_gallery_dl(url: str) -> list[str]:
+    commands = [
+        ["gallery-dl", "--get-urls", url],
+        ["gallery-dl", "-g", url],
+    ]
+    for command in commands:
         try:
-            parsed_items.append(json.loads(text))
+            proc = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
+            if proc.returncode == 0 and proc.stdout.strip():
+                urls = [clean_url(line.strip()) for line in proc.stdout.splitlines()]
+                images = dedupe([x for x in urls if looks_like_image(x)])
+                if images:
+                    return images
         except Exception:
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    parsed_items.append(json.loads(line))
-                except Exception:
-                    continue
-        all_urls: list[str] = []
-        for item in parsed_items:
-            all_urls.extend(_collect_http_urls(item))
-        fallback["images"] = _dedupe_images(all_urls)
-        for key in ("title", "description", "caption"):
-            match = re.search(rf'"{key}"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text)
-            if match:
-                try:
-                    fallback["title"] = json.loads('"' + match.group(1) + '"')
-                except Exception:
-                    fallback["title"] = match.group(1)
-                break
-        for key in ("author", "uploader", "user", "nickname"):
-            match = re.search(rf'"{key}"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"', text)
-            if match:
-                try:
-                    fallback["author"] = json.loads('"' + match.group(1) + '"')
-                except Exception:
-                    fallback["author"] = match.group(1)
-                break
-    except Exception:
-        return fallback
-    return fallback
+            pass
+    return []
 
 
-def inspect_note(url: str) -> dict:
-    result = {"notetype": "", "nt": "", "title": "", "author": "", "video": "", "images": [], "resolved_url": url}
+def inspect_note(input_url: str) -> dict:
+    result = {
+        "notetype": "",
+        "nt": "",
+        "title": "",
+        "author": "",
+        "video": "",
+        "images": [],
+        "resolved_url": resolve_url(input_url),
+        "parser": "none",
+    }
+    url = result["resolved_url"] or normalize_xhs_url(input_url)
     if not url:
         return result
 
-    # 1. 先用 yt-dlp 判斷影片。
+    # 1. yt-dlp：影片優先；若能提供縮圖也先收集。
     try:
         proc = subprocess.run(
             ["yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist", url],
@@ -184,56 +154,44 @@ def inspect_note(url: str) -> dict:
             info = json.loads(proc.stdout)
             result["title"] = str(info.get("title") or "")
             result["author"] = str(info.get("uploader") or info.get("channel") or "")
-            result["resolved_url"] = str(info.get("webpage_url") or url)
             formats = info.get("formats") or []
             ext = str(info.get("ext") or "").lower()
             duration = info.get("duration")
-            has_video_stream = any(isinstance(f, dict) and str(f.get("vcodec") or "none").lower() not in {"", "none"} for f in formats)
-            if has_video_stream or ext in {"mp4", "mov", "m4v", "webm"} or bool(duration):
+            has_video_stream = any(
+                isinstance(f, dict) and str(f.get("vcodec") or "none").lower() not in {"", "none"}
+                for f in formats
+            )
+            is_video = has_video_stream or ext in {"mp4", "mov", "m4v", "webm"} or bool(duration)
+            if is_video:
                 result["notetype"] = "video"
                 result["nt"] = "video"
                 result["video"] = str(info.get("url") or info.get("webpage_url") or url)
+                result["parser"] = "yt-dlp"
                 return result
+
             thumbs = info.get("thumbnails") or []
-            images = _dedupe_images([str(x.get("url")) for x in thumbs if isinstance(x, dict) and x.get("url")])
-            if images:
-                result["notetype"] = "pic"
-                result["nt"] = "pic"
-                result["images"] = images
-                return result
+            thumb_urls = [str(x.get("url")) for x in thumbs if isinstance(x, dict) and x.get("url")]
+            result["images"] = dedupe([x for x in thumb_urls if looks_like_image(x)])
     except Exception:
         pass
 
-    # 2. 直接抓小紅書頁面 HTML/JSON；這對圖文筆記比 yt-dlp 穩定。
-    page = inspect_with_page_html(url)
-    result["resolved_url"] = page["final_url"] or result["resolved_url"]
-    result["title"] = result["title"] or page["title"]
-    if page["video"]:
-        result["notetype"] = "video"
-        result["nt"] = "video"
-        result["video"] = page["video"]
-        return result
-    if page["images"]:
-        result["notetype"] = "pic"
-        result["nt"] = "pic"
-        result["images"] = page["images"]
-        return result
+    # 2. 直接解析小紅書頁面，取真正 CDN 圖片網址。
+    final_url, html_images = extract_images_from_html(url)
+    if final_url:
+        result["resolved_url"] = final_url
+    if html_images:
+        result["images"] = dedupe(result["images"] + html_images)
+        result["parser"] = "html"
 
-    # 3. 再試 gallery-dl。
-    gallery = inspect_with_gallery_dl(result["resolved_url"] or url)
-    if gallery["images"]:
-        result["notetype"] = "pic"
-        result["nt"] = "pic"
-        result["images"] = gallery["images"]
-        result["title"] = result["title"] or gallery["title"]
-        result["author"] = result["author"] or gallery["author"]
-        return result
+    # 3. gallery-dl 作為備援，直接輸出圖片 URL。
+    gallery_images = inspect_with_gallery_dl(result["resolved_url"] or url)
+    if gallery_images:
+        result["images"] = dedupe(result["images"] + gallery_images)
+        if result["parser"] == "none":
+            result["parser"] = "gallery-dl"
 
-    # 4. 小紅書圖文筆記常因反爬讓伺服器拿不到內容。
-    # 影片已經在第一階段優先判斷；若仍無法識別，先按 pic 回傳，
-    # 讓原捷徑的「原圖保存」分支不會被 nt 空值直接擋掉。
-    host = (urlparse(result["resolved_url"] or url).hostname or "").lower()
-    if host.endswith("xiaohongshu.com") or host.endswith("xhslink.com"):
+    # 只有真的取得至少一張圖片才宣告 pic，避免顯示成功但相簿沒有照片。
+    if result["images"]:
         result["notetype"] = "pic"
         result["nt"] = "pic"
 
@@ -252,25 +210,45 @@ def xhszshq_gate(
     if not ok:
         return PlainTextResponse("0")
 
-    url = normalize_xhs_url(c)
-    note = inspect_note(url)
-    resolved = note.get("resolved_url") or url
+    note = inspect_note(c)
+    images = note["images"]
+    first_image = images[0] if images else ""
     payload = {
         "status": 1,
         "gate": 1,
         "notetype": note["notetype"],
         "nt": note["nt"],
-        "url": resolved,
+        "url": note["resolved_url"] or normalize_xhs_url(c),
         "title": note["title"],
         "author": note["author"],
-        "images": note["images"],
-        "image": note["images"],
-        "pic": note["images"],
-        "pics": note["images"],
+
+        # 圖片欄位：同時提供常見命名，讓原捷徑不同分支都能取到實際 URL。
+        "images": images,
+        "image": images,
+        "pic": images,
+        "pics": images,
+        "img": images,
+        "imgs": images,
+        "imageList": images,
+        "image_list": images,
+        "picList": images,
+        "pic_list": images,
+        "urls": images,
+        "url_list": images,
+        "originals": images,
+        "original_images": images,
+        "first_image": first_image,
+        "image_url": first_image,
+        "pic_url": first_image,
+
         "video": note["video"],
         "videos": [note["video"]] if note["video"] else [],
         "live": [],
         "livephoto": [],
-        "message": "gate-json-media-detect-v4",
+
+        # 診斷欄位，方便後台排查，不影響捷徑。
+        "image_count": len(images),
+        "parser": note["parser"],
+        "message": "gate-json-media-detect-v5" if images or note["video"] else "parse_failed_no_media",
     }
     return JSONResponse(payload)
