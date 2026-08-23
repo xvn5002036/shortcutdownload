@@ -8,4 +8,4 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 ENV PORT=8080 PYTHONUNBUFFERED=1
-CMD ["sh", "-c", "uvicorn app.compat3:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn app.compat4:app --host 0.0.0.0 --port ${PORT}"]
