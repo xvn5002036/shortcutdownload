@@ -46,16 +46,11 @@ base._clean_image = _raw_same_note_image
 
 
 def _is_explicit_original_video_path(path: tuple[str, ...]) -> bool:
-    """只接受文章資料明確標示為原始/主影片來源的欄位。
-
-    不把一般 stream/play/share URL 猜成原片，避免再下載到帶浮水印版本。
-    """
+    """只接受文章資料明確標示為原始/主影片來源的欄位。"""
     p = ".".join(path).lower()
     blocked = ("watermark", "water_mark", "wmurl", "wm_url", "marked", "share", "ogvideo", "og:video")
     if any(x in p for x in blocked):
         return False
-
-    # 常見原始來源欄位；尤其 video_info_v2.media.stream.h264[].master_url / masterUrl。
     explicit = (
         "masterurl", "master_url",
         "originvideo", "origin_video",
@@ -88,23 +83,19 @@ def _original_video_score(path: tuple[str, ...], value: str) -> int:
 
 
 def _collect_original_video_urls(obj, out: list[tuple[int, int, str, str]], path: tuple[str, ...] = (), depth: int = 0) -> None:
-    """只在目前 exact note 物件內收集『明確原始來源欄位』的影片 URL。"""
     if depth > 18 or len(out) >= 120:
         return
-
     if isinstance(obj, str):
         value = base.clean_url(obj)
         if base._allowed_scoped_video(value) and _is_explicit_original_video_path(path):
             path_text = ".".join(path)
             out.append((_original_video_score(path, value), len(out), value, path_text))
         return
-
     if isinstance(obj, dict):
         for key, value in obj.items():
             if isinstance(value, (dict, list, str)):
                 _collect_original_video_urls(value, out, path + (str(key),), depth + 1)
         return
-
     if isinstance(obj, list):
         for index, value in enumerate(obj[:300]):
             if isinstance(value, (dict, list, str)):
@@ -116,22 +107,18 @@ def _best_original_videos_from_target(target) -> tuple[list[str], list[str]]:
     _collect_original_video_urls(target, ranked)
     if not ranked:
         return [], []
-
     best_by_url: dict[str, tuple[int, int, str, str]] = {}
     for row in ranked:
         old = best_by_url.get(row[2])
         if old is None or row[0] > old[0]:
             best_by_url[row[2]] = row
-
     ordered = sorted(best_by_url.values(), key=lambda x: (-x[0], x[1]))
     return [x[2] for x in ordered], [x[3] for x in ordered]
 
 
 def _videos_from_exact_note_obj(obj, nid: str) -> tuple[list[str], list[str]]:
-    """找到 exact noteId 後，只取該文章明確標示的原始影片來源。"""
     if not isinstance(obj, (dict, list)):
         return [], []
-
     seen = set()
 
     def walk(value, depth=0):
@@ -141,15 +128,12 @@ def _videos_from_exact_note_obj(obj, nid: str) -> tuple[list[str], list[str]]:
         if oid in seen:
             return [], []
         seen.add(oid)
-
         if isinstance(value, dict):
             if base._obj_note_id(value) == nid:
                 return _best_original_videos_from_target(value)
-
             note = value.get("note")
             if isinstance(note, dict) and base._obj_note_id(note) == nid:
                 return _best_original_videos_from_target(note)
-
             direct = value.get(nid)
             if isinstance(direct, dict):
                 target = direct.get("note") if isinstance(direct.get("note"), dict) else direct
@@ -157,13 +141,11 @@ def _videos_from_exact_note_obj(obj, nid: str) -> tuple[list[str], list[str]]:
                     found, paths = _best_original_videos_from_target(target)
                     if found:
                         return found, paths
-
             for child in value.values():
                 if isinstance(child, (dict, list)):
                     found, paths = walk(child, depth + 1)
                     if found:
                         return found, paths
-
         elif isinstance(value, list):
             for child in value[:500]:
                 if isinstance(child, (dict, list)):
@@ -176,11 +158,9 @@ def _videos_from_exact_note_obj(obj, nid: str) -> tuple[list[str], list[str]]:
 
 
 def _same_url_exact_note_original_videos(resolved: str) -> tuple[list[str], str]:
-    """網址 -> exact noteId -> 明確原始影片欄位；找不到就不退回水印展示流。"""
     nid = base._note_id_from_url(resolved)
     if not nid:
         return [], "video_note_id_missing"
-
     try:
         req = URLRequest(resolved, headers={
             "User-Agent": base.UA,
@@ -197,7 +177,6 @@ def _same_url_exact_note_original_videos(resolved: str) -> tuple[list[str], str]
         raw,
         html.unescape(raw).replace("\\u002F", "/").replace("\\/", "/").replace("\\u0026", "&"),
     ]
-
     for variant_index, text in enumerate(variants):
         positions = [m.start() for m in re.finditer(re.escape(nid), text, flags=re.I)]
         for pos in positions[:30]:
@@ -218,7 +197,6 @@ def _same_url_exact_note_original_videos(resolved: str) -> tuple[list[str], str]
                         continue
                     videos, paths = _videos_from_exact_note_obj(obj, nid)
                     if videos:
-                        # 只記錄欄位路徑，不把帶簽名的影片網址寫進日誌。
                         logger.info("XHS_ORIGINAL_VIDEO_SELECTED note=%s field=%s", nid, paths[0] if paths else "unknown")
                         return [videos[0]], f"same-url-exact-note-original-field-v{variant_index + 1}"
 
@@ -236,10 +214,15 @@ def _inspect_one_url_only_video_first(input_url: str):
         if videos:
             return resolved, [], videos, reason
 
-    # 重要：不再用 yt-dlp / 一般 stream 當影片兜底。
-    # 使用者要求「寧可沒有，也不要下載小紅書加工/帶浮水印的影片」。
-    # 如果文章資料沒有明確暴露 original/masterUrl，就不把一般 stream 當原片。
-    return _original_inspect_one_url_only(input_url)
+    # 圖片流程保留 compat7 原本邏輯；若 compat7 只找到一般影片 stream，直接丟棄，
+    # 不再把它冒充『原版無水印影片』回給捷徑。
+    fallback_resolved, fallback_images, fallback_videos, fallback_reason = _original_inspect_one_url_only(input_url)
+    if fallback_images:
+        return fallback_resolved, fallback_images, fallback_videos, fallback_reason
+    if fallback_videos:
+        logger.info("XHS_WATERMARK_FALLBACK_BLOCKED source=%s", fallback_resolved or resolved or input_url)
+        return fallback_resolved, [], [], f"{reason}+watermark_fallback_blocked"
+    return fallback_resolved, [], [], f"{reason}+{fallback_reason}"
 
 
 base.inspect_one_url_only = _inspect_one_url_only_video_first
