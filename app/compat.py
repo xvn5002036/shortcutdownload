@@ -4,21 +4,23 @@ import html
 import json
 import re
 import subprocess
-from urllib.parse import urlparse, urlunparse
-from urllib.request import Request, urlopen
+from urllib.parse import quote, urlparse, urlunparse
+from urllib.request import Request as URLRequest, urlopen
 
-from fastapi import Query
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import HTTPException, Query
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from .main import app
 from .db import log_request, verify_and_bind
 
 app.router.routes[:] = [
     route for route in app.router.routes
-    if getattr(route, "path", None) != "/xhszshq"
+    if getattr(route, "path", None) not in {"/xhszshq", "/media/image"}
 ]
 
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
+PUBLIC_BASE = "https://shortcutdownload.onrender.com"
+ALLOWED_IMAGE_HOST_TOKENS = ("xhscdn", "sns-img", "qpic", "alicdn")
 
 
 def normalize_xhs_url(value: str) -> str:
@@ -39,7 +41,7 @@ def resolve_url(value: str) -> str:
     if not value:
         return value
     try:
-        req = Request(value, headers={"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"})
+        req = URLRequest(value, headers={"User-Agent": UA, "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8"})
         with urlopen(req, timeout=15) as resp:
             return resp.geturl() or value
     except Exception:
@@ -69,15 +71,30 @@ def looks_like_image(value: str) -> bool:
     if not low.startswith(("http://", "https://")):
         return False
     host = (urlparse(value).hostname or "").lower()
-    if any(x in host for x in ("xhscdn", "sns-img", "qpic", "alicdn")):
+    if any(x in host for x in ALLOWED_IMAGE_HOST_TOKENS):
         return True
     path = urlparse(value).path.lower()
     return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif"))
 
 
+def is_allowed_remote_image(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme in {"http", "https"} and any(x in host for x in ALLOWED_IMAGE_HOST_TOKENS)
+    except Exception:
+        return False
+
+
+def proxy_image_url(remote_url: str) -> str:
+    if not remote_url:
+        return ""
+    return f"{PUBLIC_BASE}/media/image?url={quote(remote_url, safe='')}"
+
+
 def extract_images_from_html(url: str) -> tuple[str, list[str]]:
     try:
-        req = Request(url, headers={
+        req = URLRequest(url, headers={
             "User-Agent": UA,
             "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
@@ -141,7 +158,6 @@ def inspect_note(input_url: str) -> dict:
     if not url:
         return result
 
-    # 1. yt-dlp：影片優先；若能提供縮圖也先收集。
     try:
         proc = subprocess.run(
             ["yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist", url],
@@ -175,7 +191,6 @@ def inspect_note(input_url: str) -> dict:
     except Exception:
         pass
 
-    # 2. 直接解析小紅書頁面，取真正 CDN 圖片網址。
     final_url, html_images = extract_images_from_html(url)
     if final_url:
         result["resolved_url"] = final_url
@@ -183,19 +198,43 @@ def inspect_note(input_url: str) -> dict:
         result["images"] = dedupe(result["images"] + html_images)
         result["parser"] = "html"
 
-    # 3. gallery-dl 作為備援，直接輸出圖片 URL。
     gallery_images = inspect_with_gallery_dl(result["resolved_url"] or url)
     if gallery_images:
         result["images"] = dedupe(result["images"] + gallery_images)
         if result["parser"] == "none":
             result["parser"] = "gallery-dl"
 
-    # 只有真的取得至少一張圖片才宣告 pic，避免顯示成功但相簿沒有照片。
     if result["images"]:
         result["notetype"] = "pic"
         result["nt"] = "pic"
 
     return result
+
+
+@app.get("/media/image")
+def media_image(url: str = Query(...)):
+    if not is_allowed_remote_image(url):
+        raise HTTPException(status_code=400, detail="unsupported image host")
+    try:
+        req = URLRequest(url, headers={
+            "User-Agent": UA,
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Referer": "https://www.xiaohongshu.com/",
+        })
+        with urlopen(req, timeout=25) as resp:
+            data = resp.read(25 * 1024 * 1024)
+            media_type = resp.headers.get_content_type() or "image/jpeg"
+            if not media_type.startswith("image/"):
+                media_type = "image/jpeg"
+            return Response(
+                content=data,
+                media_type=media_type,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"image fetch failed: {type(exc).__name__}")
 
 
 @app.get("/xhszshq")
@@ -211,7 +250,8 @@ def xhszshq_gate(
         return PlainTextResponse("0")
 
     note = inspect_note(c)
-    images = note["images"]
+    raw_images = note["images"]
+    images = [proxy_image_url(x) for x in raw_images]
     first_image = images[0] if images else ""
     payload = {
         "status": 1,
@@ -222,7 +262,8 @@ def xhszshq_gate(
         "title": note["title"],
         "author": note["author"],
 
-        # 圖片欄位：同時提供常見命名，讓原捷徑不同分支都能取到實際 URL。
+        # 捷徑使用這些網址時，會從我們自己的 /media/image 取得真正圖片位元組，
+        # 避免小紅書 CDN 的 Referer / User-Agent 限制造成「顯示成功但相簿沒有照片」。
         "images": images,
         "image": images,
         "pic": images,
@@ -241,14 +282,16 @@ def xhszshq_gate(
         "image_url": first_image,
         "pic_url": first_image,
 
+        # 保留原始 CDN 網址供診斷。
+        "raw_images": raw_images,
+        "raw_first_image": raw_images[0] if raw_images else "",
+
         "video": note["video"],
         "videos": [note["video"]] if note["video"] else [],
         "live": [],
         "livephoto": [],
-
-        # 診斷欄位，方便後台排查，不影響捷徑。
         "image_count": len(images),
         "parser": note["parser"],
-        "message": "gate-json-media-detect-v5" if images or note["video"] else "parse_failed_no_media",
+        "message": "gate-json-media-proxy-v6" if images or note["video"] else "parse_failed_no_media",
     }
     return JSONResponse(payload)
