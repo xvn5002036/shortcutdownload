@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>XHS Pro 管理後台</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fb}
+    *{box-sizing:border-box}body{margin:0}.shell{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+    aside{background:#111827;color:#fff;padding:24px 18px}.brand{font-size:22px;font-weight:800;margin-bottom:28px}.nav button{width:100%;border:0;background:transparent;color:#cbd5e1;text-align:left;padding:12px;border-radius:10px;font-size:15px;cursor:pointer}.nav button.active,.nav button:hover{background:#1f2937;color:#fff}
+    main{padding:28px}.top{display:flex;justify-content:space-between;gap:16px;align-items:center;margin-bottom:22px}.top h1{margin:0;font-size:27px}.token{display:flex;gap:8px}.token input{width:260px}
+    input,select,button{font:inherit}.field,input,select{border:1px solid #d5dbe5;border-radius:10px;padding:10px 12px;background:#fff}.primary{border:0;background:#2563eb;color:#fff;border-radius:10px;padding:10px 14px;font-weight:700;cursor:pointer}.danger{background:#dc2626}.muted{background:#64748b}.success{background:#16a34a}
+    .stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin-bottom:20px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:18px;box-shadow:0 4px 18px #0f172a0a}.stat b{display:block;font-size:28px;margin-top:8px}.label{color:#64748b;font-size:13px}
+    .panel{display:none}.panel.active{display:block}.toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px}.toolbar input{min-width:150px}.table-wrap{overflow:auto;background:#fff;border:1px solid #e5e7eb;border-radius:16px}table{width:100%;border-collapse:collapse;min-width:860px}th,td{text-align:left;padding:12px 14px;border-bottom:1px solid #edf0f4;font-size:14px}th{background:#f8fafc;color:#475569;position:sticky;top:0}.badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:700}.active-b{background:#dcfce7;color:#166534}.disabled-b{background:#fee2e2;color:#991b1b}.small{font-size:12px;color:#64748b}.actions{display:flex;gap:6px}.actions button{border:0;border-radius:8px;padding:7px 9px;color:#fff;cursor:pointer}.empty{padding:28px;text-align:center;color:#94a3b8}.notice{padding:11px 13px;border-radius:10px;background:#eff6ff;color:#1d4ed8;margin-bottom:14px;display:none}.notice.show{display:block}
+    @media(max-width:900px){.shell{grid-template-columns:1fr}aside{padding:14px}.brand{margin-bottom:12px}.nav{display:flex;overflow:auto}.nav button{width:auto;white-space:nowrap}main{padding:16px}.top{align-items:flex-start;flex-direction:column}.token{width:100%}.token input{width:100%}.stats{grid-template-columns:repeat(2,1fr)}}
+  </style>
+</head>
+<body>
+<div class="shell">
+  <aside>
+    <div class="brand">XHS Pro System</div>
+    <div class="nav">
+      <button data-panel="dashboard" class="active">儀表板</button>
+      <button data-panel="licenses">啟用碼管理</button>
+      <button data-panel="devices">裝置管理</button>
+      <button data-panel="logs">API 紀錄</button>
+    </div>
+  </aside>
+  <main>
+    <div class="top"><h1 id="title">儀表板</h1><div class="token"><input id="token" type="password" placeholder="管理員權杖"><button class="primary" onclick="saveToken()">儲存</button></div></div>
+    <div id="notice" class="notice"></div>
+
+    <section id="dashboard" class="panel active">
+      <div class="stats">
+        <div class="card stat"><span class="label">啟用碼總數</span><b id="sLicenses">0</b></div>
+        <div class="card stat"><span class="label">有效啟用碼</span><b id="sActive">0</b></div>
+        <div class="card stat"><span class="label">已綁裝置</span><b id="sDevices">0</b></div>
+        <div class="card stat"><span class="label">API 紀錄</span><b id="sLogs">0</b></div>
+      </div>
+      <div class="card"><b>捷徑相容 API</b><p class="small">GET /xhszshq?a=啟用碼&b=ios&c=URL編碼內容&device_id=裝置ID</p><p class="small">目前階段：驗證成功回傳 1；失敗回傳 0。後續會依原版 v4.7 解碼結果補齊所有回傳與分支。</p></div>
+    </section>
+
+    <section id="licenses" class="panel">
+      <div class="toolbar">
+        <input id="customKey" placeholder="自訂啟用碼（可留空）">
+        <select id="days"><option value="30">30 天</option><option value="90">90 天</option><option value="365">365 天</option><option value="">永久</option></select>
+        <input id="maxDevices" type="number" min="1" max="50" value="1" placeholder="裝置數">
+        <input id="note" placeholder="備註">
+        <button class="primary" onclick="createLicense()">建立啟用碼</button>
+        <button class="muted primary" onclick="loadAll()">重新整理</button>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>啟用碼</th><th>狀態</th><th>裝置</th><th>到期</th><th>備註</th><th>操作</th></tr></thead><tbody id="licenseRows"></tbody></table></div>
+    </section>
+
+    <section id="devices" class="panel">
+      <div class="toolbar"><button class="muted primary" onclick="loadAll()">重新整理</button></div>
+      <div class="table-wrap"><table><thead><tr><th>啟用碼</th><th>Device ID</th><th>平台</th><th>首次綁定</th><th>最後使用</th><th>操作</th></tr></thead><tbody id="deviceRows"></tbody></table></div>
+    </section>
+
+    <section id="logs" class="panel">
+      <div class="toolbar"><button class="muted primary" onclick="loadAll()">重新整理</button></div>
+      <div class="table-wrap"><table><thead><tr><th>時間</th><th>啟用碼</th><th>裝置</th><th>平台</th><th>結果</th><th>Payload</th></tr></thead><tbody id="logRows"></tbody></table></div>
+    </section>
+  </main>
+</div>
+<script>
+const state={licenses:[],devices:[],logs:[]};
+const titles={dashboard:'儀表板',licenses:'啟用碼管理',devices:'裝置管理',logs:'API 紀錄'};
+document.querySelectorAll('.nav button').forEach(btn=>btn.onclick=()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));btn.classList.add('active');document.getElementById(btn.dataset.panel).classList.add('active');document.getElementById('title').textContent=titles[btn.dataset.panel]});
+const tokenInput=document.getElementById('token');tokenInput.value=localStorage.getItem('xhsAdminToken')||'';
+function saveToken(){localStorage.setItem('xhsAdminToken',tokenInput.value.trim());notice('管理員權杖已儲存');loadAll()}
+function headers(){return {'Content-Type':'application/json','X-Admin-Token':tokenInput.value.trim()}}
+function notice(text){const el=document.getElementById('notice');el.textContent=text;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),3000)}
+async function api(path,options={}){const r=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.detail||`HTTP ${r.status}`);return data}
+function fmt(v){if(!v)return '永久';try{return new Date(v).toLocaleString()}catch{return v}}
+function esc(v=''){return String(v).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function loadAll(){try{const [l,d,g]=await Promise.all([api('/api/admin/licenses'),api('/api/admin/devices'),api('/api/admin/logs?limit=300')]);state.licenses=l.items;state.devices=d.items;state.logs=g.items;render()}catch(e){notice(e.message)}}
+function render(){document.getElementById('sLicenses').textContent=state.licenses.length;document.getElementById('sActive').textContent=state.licenses.filter(x=>x.status==='active').length;document.getElementById('sDevices').textContent=state.devices.length;document.getElementById('sLogs').textContent=state.logs.length;
+ document.getElementById('licenseRows').innerHTML=state.licenses.length?state.licenses.map(x=>`<tr><td><b>${esc(x.license_key)}</b><div class="small">${fmt(x.created_at)}</div></td><td><span class="badge ${x.status==='active'?'active-b':'disabled-b'}">${x.status}</span></td><td>${x.device_count}/${x.max_devices}</td><td>${fmt(x.expires_at)}</td><td>${esc(x.note)}</td><td><div class="actions"><button class="${x.status==='active'?'muted':'success'}" onclick="setStatus(${x.id},'${x.status==='active'?'disabled':'active'}')">${x.status==='active'?'停用':'啟用'}</button><button class="danger" onclick="removeLicense(${x.id})">刪除</button></div></td></tr>`).join(''):'<tr><td colspan="6" class="empty">尚無啟用碼</td></tr>';
+ document.getElementById('deviceRows').innerHTML=state.devices.length?state.devices.map(x=>`<tr><td>${esc(x.license_key)}</td><td class="small">${esc(x.device_id)}</td><td>${esc(x.platform)}</td><td>${fmt(x.first_seen_at)}</td><td>${fmt(x.last_seen_at)}</td><td><div class="actions"><button class="danger" onclick="unbind(${x.id})">解除綁定</button></div></td></tr>`).join(''):'<tr><td colspan="6" class="empty">尚無綁定裝置</td></tr>';
+ document.getElementById('logRows').innerHTML=state.logs.length?state.logs.map(x=>`<tr><td>${fmt(x.created_at)}</td><td>${esc(x.license_key)}</td><td class="small">${esc(x.device_id)}</td><td>${esc(x.platform)}</td><td>${esc(x.result)}</td><td class="small">${esc(x.payload).slice(0,100)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">尚無 API 紀錄</td></tr>'}
+async function createLicense(){try{const days=document.getElementById('days').value;await api('/api/admin/licenses',{method:'POST',body:JSON.stringify({days:days?Number(days):null,max_devices:Number(document.getElementById('maxDevices').value||1),note:document.getElementById('note').value,key:document.getElementById('customKey').value||null})});notice('啟用碼已建立');document.getElementById('customKey').value='';document.getElementById('note').value='';loadAll()}catch(e){notice(e.message)}}
+async function setStatus(id,status){try{await api(`/api/admin/licenses/${id}/status`,{method:'PATCH',body:JSON.stringify({status})});loadAll()}catch(e){notice(e.message)}}
+async function removeLicense(id){if(!confirm('確定刪除這個啟用碼？'))return;try{await api(`/api/admin/licenses/${id}`,{method:'DELETE'});loadAll()}catch(e){notice(e.message)}}
+async function unbind(id){if(!confirm('確定解除這台裝置的綁定？'))return;try{await api(`/api/admin/devices/${id}`,{method:'DELETE'});loadAll()}catch(e){notice(e.message)}}
+if(tokenInput.value)loadAll();
+</script>
+</body></html>

@@ -1,12 +1,16 @@
 services:
   - type: web
-    name: iphone-media-downloader
+    name: xhs-pro-system
     runtime: docker
     plan: free
     healthCheckPath: /health
     envVars:
       - key: DOWNLOAD_API_KEY
         sync: false
+      - key: XHS_ADMIN_TOKEN
+        sync: false
+      - key: XHS_DB_PATH
+        value: /tmp/xhs.db
       - key: MAX_DOWNLOAD_MB
         value: 250
       - key: DOWNLOAD_TIMEOUT_SECONDS
