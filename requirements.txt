@@ -3,3 +3,4 @@ uvicorn[standard]==0.35.0
 yt-dlp[default]
 gallery-dl
 psycopg[binary]==3.2.9
+chompjs==1.4.0
