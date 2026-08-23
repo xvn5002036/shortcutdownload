@@ -238,23 +238,39 @@ def xhszshq_gate(
     images = [proxy_image_url(x) for x in raw_images]
     first_image = images[0] if images else ""
     note_url = note["resolved_url"] or normalize_xhs_url(c)
-    media_url = images if note["nt"] == "pic" else (note["video"] or note_url)
 
-    # 盡量對齊不同版本捷徑可能使用的圖片欄位名稱。
-    image_aliases = {
+    # 單數欄位回傳「單一網址」，複數欄位回傳「完整清單」。
+    # 這可相容 Shortcut 將單數欄位直接交給「取得 URL 內容」的情況。
+    payload = {
+        "status": 1,
+        "gate": 1,
+        "notetype": note["notetype"],
+        "nt": note["nt"],
+        "url": first_image if note["nt"] == "pic" else (note["video"] or note_url),
+        "urls": images,
+        "note_url": note_url,
+        "source_url": note_url,
+        "title": note["title"],
+        "author": note["author"],
+
+        "image": first_image,
         "images": images,
-        "image": images,
-        "pic": images,
+        "pic": first_image,
         "pics": images,
-        "img": images,
+        "img": first_image,
         "imgs": images,
+        "photo": first_image,
+        "photos": images,
+        "original": first_image,
+        "originals": images,
+        "media": first_image,
+        "mediaList": images,
+
         "imageList": images,
         "image_list": images,
         "picList": images,
         "pic_list": images,
-        "urls": images,
         "url_list": images,
-        "originals": images,
         "original_images": images,
         "imageUrls": images,
         "image_urls": images,
@@ -262,41 +278,23 @@ def xhszshq_gate(
         "img_urls": images,
         "downloadUrls": images,
         "download_urls": images,
-        "picurl": images,
+        "picurl": first_image,
         "picurls": images,
-        "picUrl": images,
+        "picUrl": first_image,
         "picUrls": images,
-        "imgurl": images,
+        "imgurl": first_image,
         "imgurls": images,
-        "imgUrl": images,
-        "imgUrls2": images,
-        "photo": images,
-        "photos": images,
+        "imgUrl": first_image,
         "photoUrls": images,
         "photo_urls": images,
-        "origin": images,
-        "original": images,
+        "origin": first_image,
         "originUrls": images,
         "origin_urls": images,
         "originalUrls": images,
         "original_urls": images,
-        "media": images,
-        "mediaList": images,
         "media_list": images,
         "data": images,
-    }
 
-    payload = {
-        "status": 1,
-        "gate": 1,
-        "notetype": note["notetype"],
-        "nt": note["nt"],
-        "url": media_url,
-        "note_url": note_url,
-        "source_url": note_url,
-        "title": note["title"],
-        "author": note["author"],
-        **image_aliases,
         "first_image": first_image,
         "image_url": first_image,
         "pic_url": first_image,
@@ -308,9 +306,11 @@ def xhszshq_gate(
         "videos": [note["video"]] if note["video"] else [],
         "live": [],
         "livephoto": [],
+        "livePhoto": [],
+        "live_photos": [],
         "image_count": len(images),
         "parser": note["parser"],
-        "message": "gate-json-media-proxy-v8" if images or note["video"] else "parse_failed_no_media",
+        "message": "gate-json-media-proxy-v9" if images or note["video"] else "parse_failed_no_media",
     }
 
     logger.info(
