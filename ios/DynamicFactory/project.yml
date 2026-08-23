@@ -1,0 +1,23 @@
+name: DynamicFactory
+options:
+  bundleIdPrefix: com.xvn5002036
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: 17.0
+    SWIFT_VERSION: 5.10
+targets:
+  DynamicFactory:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xvn5002036.DynamicFactory
+        PRODUCT_NAME: 動圖工廠
+        INFOPLIST_KEY_CFBundleDisplayName: 動圖工廠
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: 需要讀取照片與影片以進行轉換。
+        INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription: 需要將轉換結果儲存到照片圖庫。
+        GENERATE_INFOPLIST_FILE: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies: []
