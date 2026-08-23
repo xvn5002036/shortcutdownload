@@ -14,7 +14,6 @@ from .compat2 import proxy_video_url
 from .compat3 import canonical_video_key, dedupe, to_original_xhs_image_url
 from .compat4 import app
 
-# 只取代 GATE 路由；圖片/影片代理沿用既有版本。
 app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) != "/xhszshq"]
 
 
@@ -64,6 +63,7 @@ def _balanced_array(text: str, start: int, limit: int = 500_000) -> str:
 
 
 def _valid_note_image(url: str) -> bool:
+    """此函式只套用在已鎖定『當前筆記 imageList』內，因此不再用路徑字樣誤殺正式 UUID 圖片。"""
     try:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
@@ -72,17 +72,17 @@ def _valid_note_image(url: str) -> bool:
             return False
         if any(x in host for x in ("avatar", "static", "picasso")):
             return False
-        return any(x in path for x in ("notes_uhdr", "note_pre_post", "notes_pre_post", "spectrum"))
+        if any(x in path for x in ("/avatar", "/comment", "/emoji", "/icon", "/logo")):
+            return False
+        return bool(path and path != "/")
     except Exception:
         return False
 
 
 def _one_image_url(item) -> str:
-    """每個 imageList 項目只選一張主圖，禁止遞迴掃出頭像/留言/推薦素材。"""
     if not isinstance(item, dict):
         return ""
 
-    # 優先使用 imageList 這個圖片項目自己的主 URL。
     for key in ("urlDefault", "originalUrl", "original_url", "urlPre", "url", "imageUrl", "image_url"):
         value = item.get(key)
         if isinstance(value, str):
@@ -90,10 +90,8 @@ def _one_image_url(item) -> str:
             if value.startswith(("http://", "https://")) and _valid_note_image(value):
                 return value
 
-    # 部分頁面把可用 URL 放在 infoList，但仍然只從「目前這一張」裡選一個。
     info = item.get("infoList") or item.get("info_list")
     if isinstance(info, list):
-        preferred: list[str] = []
         for entry in info:
             if not isinstance(entry, dict):
                 continue
@@ -102,10 +100,7 @@ def _one_image_url(item) -> str:
                 if isinstance(value, str):
                     value = _clean(value)
                     if value.startswith(("http://", "https://")) and _valid_note_image(value):
-                        preferred.append(value)
-        if preferred:
-            # 保留 imageList 本身的順序，每張只取第一個有效主圖。
-            return preferred[0]
+                        return value
     return ""
 
 
@@ -120,7 +115,6 @@ def _images_from_array(array_text: str) -> list[str]:
 
 
 def extract_exact_note_images(note_url: str) -> tuple[list[str], str]:
-    """只接受目前 noteId 所屬的 imageList；找不到就回空，不使用整頁掃描當 fallback。"""
     try:
         req = URLRequest(note_url, headers={
             "User-Agent": UA,
@@ -139,7 +133,6 @@ def extract_exact_note_images(note_url: str) -> tuple[list[str], str]:
     if not nid:
         return [], "note_id_missing"
 
-    # 先找完全相同的 noteId，再只在其附近尋找 imageList。
     anchors = [m.start() for m in re.finditer(re.escape(nid), text)]
     if not anchors:
         return [], "note_id_not_in_page"
@@ -151,7 +144,6 @@ def extract_exact_note_images(note_url: str) -> tuple[list[str], str]:
         segment = text[left:right]
         for m in re.finditer(r'"imageList"\s*:', segment):
             global_pos = left + m.start()
-            # 必須靠近目前 noteId，避免跳到留言區或推薦卡片。
             distance = abs(global_pos - anchor)
             if distance > 180_000:
                 continue
@@ -162,7 +154,7 @@ def extract_exact_note_images(note_url: str) -> tuple[list[str], str]:
 
     if not candidates:
         return [], "exact_imageList_missing"
-    candidates.sort(key=lambda x: (x[0], len(x[1])))
+    candidates.sort(key=lambda x: (x[0], -len(x[1])))
     return candidates[0][1], "exact_note_imageList"
 
 
@@ -187,8 +179,6 @@ def xhszshq_gate(
     note_url = note["resolved_url"] or normalize_xhs_url(c)
     exact_images, exact_parser = extract_exact_note_images(note_url)
 
-    # 圖文筆記絕不再 fallback 到 inspect_note 的整頁圖片清單。
-    # 找不到本篇 imageList 時寧可報錯，也不要亂下載留言/推薦文章圖片。
     if note["nt"] != "video":
         if not exact_images:
             return JSONResponse({
@@ -269,5 +259,5 @@ def xhszshq_gate(
         "live_count": len(ligl),
         "normal_count": len(nigl),
         "parser": note["parser"],
-        "message": "ok-exact-current-note-only-v2",
+        "message": "ok-exact-current-note-only-v3",
     })
