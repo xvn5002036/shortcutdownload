@@ -9,8 +9,8 @@ services:
         sync: false
       - key: XHS_ADMIN_TOKEN
         sync: false
-      - key: XHS_DB_PATH
-        value: /tmp/xhs.db
+      - key: DATABASE_URL
+        sync: false
       - key: MAX_DOWNLOAD_MB
         value: 250
       - key: DOWNLOAD_TIMEOUT_SECONDS
