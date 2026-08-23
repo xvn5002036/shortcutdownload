@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from urllib.parse import quote, urlparse
 from urllib.request import Request as URLRequest, urlopen
 
@@ -43,6 +44,34 @@ def is_allowed_remote_video(value: str) -> bool:
         return False
 
 
+def live_video_identity(value: str) -> str:
+    """把主 CDN / bak CDN 的同一支 Live 影片視為同一素材。"""
+    try:
+        path = urlparse(value).path
+        name = path.rsplit("/", 1)[-1].lower()
+        # 小紅書實況影片常見：01ea...._19.mp4。不同 CDN host 只是備援。
+        match = re.search(r"([0-9a-f]{20,}_[0-9]+)\.mp4$", name)
+        if match:
+            return match.group(1)
+        return name or value
+    except Exception:
+        return value
+
+
+def dedupe_live_videos(values: list[str]) -> list[str]:
+    seen = set()
+    result = []
+    for value in values:
+        if not value:
+            continue
+        identity = live_video_identity(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        result.append(value)
+    return result
+
+
 @app.get("/media/video")
 def media_video(url: str = Query(...)):
     if not is_allowed_remote_video(url):
@@ -57,12 +86,14 @@ def media_video(url: str = Query(...)):
             data = resp.read(120 * 1024 * 1024)
             media_type = resp.headers.get_content_type() or "video/mp4"
             if not media_type.startswith("video/"):
-                media_type = "video/mp4"
+                raise HTTPException(status_code=502, detail="remote resource is not a video")
             return Response(
                 content=data,
                 media_type=media_type,
                 headers={"Cache-Control": "public, max-age=1800"},
             )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"video fetch failed: {type(exc).__name__}")
 
@@ -93,31 +124,33 @@ def xhszshq_gate(
     images = [proxy_image_url(x) for x in raw_images]
     first_image = images[0] if images else ""
 
-    # 已從捷徑畫面確認：
-    # 1. 圖片分支讀 GATE.gigl
-    # 2. 實況分支讀 GATE.ligl，每個項目再讀 cover / livevideo
-    # 3. 實況分支結束後會再讀 GATE.nigl 保存普通圖片
+    # 捷徑正式欄位：
+    # gigl = 普通圖片貼文圖片清單
+    # ligl = 實況配對清單，每項必須有 cover / livevideo
+    # nigl = 實況貼文中非 Live 的普通圖片
     live_images_raw = note["live_images"] or (raw_images if note["nt"] == "livepic" else [])
     live_covers = [proxy_image_url(x) for x in live_images_raw]
-    raw_live_videos = note["live_videos"]
+
+    # 頁面常同時提供主 CDN 與 sns-bak-* 備援網址。
+    # 如果全部塞進 ligl，捷徑會看起來像一直輪迴。
+    raw_live_videos = dedupe_live_videos(note["live_videos"])
     live_videos = [proxy_video_url(x) for x in raw_live_videos]
 
-    ligl = []
-    for index, cover in enumerate(live_covers):
-        video = ""
-        if live_videos:
-            video = live_videos[index] if index < len(live_videos) else live_videos[0]
-        if cover and video:
-            ligl.append({
-                "cover": cover,
-                "livevideo": video,
-                # 保留相容別名，但捷徑正式使用上面兩個鍵。
-                "image": cover,
-                "video": video,
-            })
+    # 不再對缺少影片的封面重複套用第一支影片。
+    # 只建立真正一對一可用的 Live Photo 配對。
+    pair_count = min(len(live_covers), len(live_videos))
+    ligl = [
+        {
+            "cover": live_covers[index],
+            "livevideo": live_videos[index],
+            "image": live_covers[index],
+            "video": live_videos[index],
+        }
+        for index in range(pair_count)
+    ]
 
-    live_cover_set = set(live_covers)
-    nigl = [x for x in images if x not in live_cover_set] if note["nt"] == "livepic" else []
+    paired_cover_set = set(live_covers[:pair_count])
+    nigl = [x for x in images if x not in paired_cover_set] if note["nt"] == "livepic" else []
     gigl = images if note["nt"] == "pic" else []
 
     first_live_cover = live_covers[0] if live_covers else ""
@@ -132,13 +165,9 @@ def xhszshq_gate(
         "source_url": note_url,
         "title": note["title"],
         "author": note["author"],
-
-        # 正式依捷徑欄位命名。
         "gigl": gigl,
         "ligl": ligl,
         "nigl": nigl,
-
-        # 其餘欄位保留相容性。
         "url": (
             first_image if note["nt"] == "pic"
             else first_live_cover if note["nt"] == "livepic"
