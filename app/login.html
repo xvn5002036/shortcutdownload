@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>XHS Pro 後台登入</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fb}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:min(92vw,420px);background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:24px;box-shadow:0 16px 50px #0f172a14}h1{margin:0 0 8px;font-size:26px}.hint{color:#64748b;line-height:1.6;font-size:14px;margin-bottom:18px}input,button{width:100%;font:inherit;border-radius:12px;padding:13px 14px}input{border:1px solid #d5dbe5;background:#fff;font-size:16px}button{border:0;background:#2563eb;color:#fff;font-weight:800;margin-top:12px;cursor:pointer}button:disabled{opacity:.55}.status{min-height:22px;margin-top:12px;color:#b91c1c;font-size:14px}.remember{margin-top:16px;padding:12px;border-radius:12px;background:#f8fafc;color:#475569;font-size:13px;line-height:1.55}
+</style>
+</head>
+<body><main class="card"><h1>XHS Pro 管理後台</h1><div class="hint">這台 iPhone 登入成功後會長期記住，不需要每次輸入帳號密碼；除非你手動登出或清除 Safari 網站資料。</div><form id="login"><input id="password" type="password" autocomplete="current-password" placeholder="輸入管理密碼" required><button id="go" type="submit">登入並記住這台 iPhone</button><div id="status" class="status" aria-live="polite"></div></form><div class="remember">登入狀態會存成安全 Cookie，不會把管理密碼顯示在網址，也不會寫進瀏覽器頁面。</div></main><script>
+const form=document.getElementById('login'),button=document.getElementById('go'),status=document.getElementById('status'),password=document.getElementById('password');form.addEventListener('submit',async e=>{e.preventDefault();button.disabled=true;status.textContent='';try{const r=await fetch('/api/admin/login',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:password.value})});let data={};try{data=await r.json()}catch{}if(!r.ok)throw new Error(data.detail||'登入失敗');location.replace('/admin')}catch(err){status.textContent=err.message;button.disabled=false;password.select()}});
+</script></body></html>
