@@ -35,12 +35,12 @@ def _note_id(url: str) -> str:
 
 
 def _unwrap(value):
-    for _ in range(6):
+    for _ in range(8):
         if isinstance(value, dict):
-            if "_value" in value and len(value) <= 4:
+            if "_value" in value and len(value) <= 5:
                 value = value["_value"]
                 continue
-            if "value" in value and len(value) <= 4:
+            if "value" in value and len(value) <= 5:
                 value = value["value"]
                 continue
         break
@@ -86,11 +86,7 @@ def _one_image_url(item) -> str:
             if not isinstance(entry, dict):
                 continue
             label = str(entry.get("imageScene") or entry.get("type") or entry.get("name") or "").lower()
-            score = 0
-            if "original" in label or "default" in label:
-                score = -2
-            elif "pre" in label:
-                score = -1
+            score = -2 if ("original" in label or "default" in label) else -1 if "pre" in label else 0
             for key in ("url", "urlDefault", "urlPre", "url_default", "url_pre"):
                 value = entry.get(key)
                 if isinstance(value, str):
@@ -102,6 +98,16 @@ def _one_image_url(item) -> str:
             ranked.sort(key=lambda x: x[0])
             return ranked[0][1]
     return ""
+
+
+def _images_from_note_obj(note_obj) -> list[str]:
+    note_obj = _unwrap(note_obj)
+    if not isinstance(note_obj, dict):
+        return []
+    image_list = _unwrap(note_obj.get("imageList") or note_obj.get("image_list"))
+    if not isinstance(image_list, list):
+        return []
+    return dedupe([u for u in (_one_image_url(item) for item in image_list) if u])
 
 
 def _parse_initial_state(text: str):
@@ -122,12 +128,19 @@ def _parse_initial_state(text: str):
     return None
 
 
-def _find_note_detail_map(state):
-    """在 INITIAL_STATE 內尋找 noteDetailMap；找到後仍會用 exact noteId 鎖定當前文章。"""
+def _object_note_id(value) -> str:
+    value = _unwrap(value)
+    if not isinstance(value, dict):
+        return ""
+    return str(value.get("noteId") or value.get("note_id") or value.get("id") or "")
+
+
+def _find_exact_note_images(state, nid: str) -> tuple[list[str], str]:
+    """不依賴 noteDetailMap 名稱，遞迴尋找 exact noteId 的物件，且只讀該物件自己的 imageList。"""
     seen: set[int] = set()
 
     def walk(value, depth: int = 0):
-        if depth > 12:
+        if depth > 18:
             return None
         value = _unwrap(value)
         if isinstance(value, dict):
@@ -136,52 +149,44 @@ def _find_note_detail_map(state):
                 return None
             seen.add(oid)
 
-            for key in ("noteDetailMap", "note_detail_map"):
-                detail = _unwrap(value.get(key))
-                if isinstance(detail, dict):
-                    return detail
+            # 情況 1：目前物件本身就是 note。
+            if _object_note_id(value) == nid:
+                images = _images_from_note_obj(value)
+                if images:
+                    return images, "initial_state.exact_note_object.imageList"
 
-            # 優先搜尋常見筆記狀態容器，再搜尋其餘欄位。
-            priority = ("note", "noteData", "note_data", "data", "detail", "detailData", "detail_data")
-            for key in priority:
-                if key in value:
-                    found = walk(value.get(key), depth + 1)
-                    if found is not None:
-                        return found
-            for key, child in value.items():
-                if key in priority:
-                    continue
+            # 情況 2：外層 entry 內有 note。
+            nested_note = _unwrap(value.get("note"))
+            if isinstance(nested_note, dict) and _object_note_id(nested_note) == nid:
+                images = _images_from_note_obj(nested_note)
+                if images:
+                    return images, "initial_state.exact_entry.note.imageList"
+
+            # 情況 3：字典 key 本身就是 noteId。
+            direct = _unwrap(value.get(nid))
+            if isinstance(direct, dict):
+                images = _images_from_note_obj(direct)
+                if not images:
+                    images = _images_from_note_obj(_unwrap(direct.get("note")))
+                if images:
+                    return images, "initial_state.exact_noteid_key.imageList"
+
+            for child in value.values():
                 found = walk(child, depth + 1)
                 if found is not None:
                     return found
+
         elif isinstance(value, list):
-            for child in value[:200]:
+            for child in value[:500]:
                 found = walk(child, depth + 1)
                 if found is not None:
                     return found
         return None
 
-    return walk(state)
-
-
-def _find_note_entry(detail_map: dict, nid: str):
-    direct = _unwrap(detail_map.get(nid))
-    if isinstance(direct, dict):
-        return direct
-
-    for value in detail_map.values():
-        value = _unwrap(value)
-        if not isinstance(value, dict):
-            continue
-        note = _unwrap(value.get("note"))
-        if isinstance(note, dict):
-            candidate_id = str(note.get("noteId") or note.get("note_id") or note.get("id") or "")
-            if candidate_id == nid:
-                return value
-        candidate_id = str(value.get("noteId") or value.get("note_id") or value.get("id") or "")
-        if candidate_id == nid:
-            return value
-    return None
+    result = walk(state)
+    if result is None:
+        return [], "exact_noteid_object_or_imageList_missing"
+    return result
 
 
 def extract_state_note_images(note_url: str) -> tuple[list[str], str]:
@@ -193,7 +198,7 @@ def extract_state_note_images(note_url: str) -> tuple[list[str], str]:
             "Referer": "https://www.xiaohongshu.com/",
         })
         with urlopen(req, timeout=25) as resp:
-            raw = resp.read(10 * 1024 * 1024).decode("utf-8", errors="ignore")
+            raw = resp.read(12 * 1024 * 1024).decode("utf-8", errors="ignore")
             final_url = resp.geturl() or note_url
     except Exception:
         return [], "fetch_failed"
@@ -206,26 +211,7 @@ def extract_state_note_images(note_url: str) -> tuple[list[str], str]:
     if not isinstance(state, dict):
         return [], "initial_state_missing"
 
-    detail_map = _find_note_detail_map(state)
-    if not isinstance(detail_map, dict):
-        return [], "note_detail_map_missing_recursive"
-
-    entry = _find_note_entry(detail_map, nid)
-    if not isinstance(entry, dict):
-        return [], "current_note_entry_missing"
-
-    note_obj = _unwrap(entry.get("note"))
-    if not isinstance(note_obj, dict):
-        note_obj = entry
-
-    image_list = _unwrap(note_obj.get("imageList") or note_obj.get("image_list"))
-    if not isinstance(image_list, list):
-        return [], "current_note_image_list_missing"
-
-    images = dedupe([u for u in (_one_image_url(item) for item in image_list) if u])
-    if not images:
-        return [], "current_note_image_list_empty"
-    return images, "initial_state.recursive_noteDetailMap.current.imageList"
+    return _find_exact_note_images(state, nid)
 
 
 def _proxy(items: list[str]) -> list[str]:
@@ -253,7 +239,7 @@ def xhszshq_gate(
         if not exact_images:
             return JSONResponse({
                 "error": "current_note_images_not_found",
-                "message": "無法從目前文章自己的 imageList 取得圖片，已停止以避免抓到留言或其他文章",
+                "message": "找不到目前文章 exact noteId 對應的 imageList，已停止以避免抓到留言或其他文章",
                 "note_url": note_url,
                 "parser": exact_parser,
             })
@@ -329,5 +315,5 @@ def xhszshq_gate(
         "live_count": len(ligl),
         "normal_count": len(nigl),
         "parser": note["parser"],
-        "message": "ok-current-note-initial-state-v2",
+        "message": "ok-current-note-exact-id-v3",
     })
