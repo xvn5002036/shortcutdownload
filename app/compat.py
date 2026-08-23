@@ -180,7 +180,6 @@ def inspect_note(input_url: str) -> dict:
     if html_images or html_videos:
         result["parser"] = "html"
 
-    # Live Photo / 實況圖優先判斷。捷徑已確認以 nt 包含 livepic 分流。
     if live_hint and html_images and html_videos:
         result["notetype"] = "livepic"
         result["nt"] = "livepic"
@@ -288,7 +287,6 @@ def xhszshq_gate(
     first_live_image = live_images[0] if live_images else ""
     first_live_video = live_videos[0] if live_videos else ""
 
-    # 真正解析失敗才回 error。成功的 pic/video/livepic 回應完全不含 error 欄位。
     if not note["nt"]:
         logger.info("XHS_GATE_PARSE_FAILED source=%s parser=%s", note_url, note["parser"])
         return JSONResponse({
@@ -312,7 +310,6 @@ def xhszshq_gate(
         "title": note["title"],
         "author": note["author"],
 
-        # 圖片分支：單數欄位單一網址，複數欄位完整清單。
         "image": first_image,
         "images": images,
         "pic": first_image,
@@ -334,12 +331,11 @@ def xhszshq_gate(
         "picurls": images,
         "picUrl": first_image,
         "picUrls": images,
+        "gigl": images,
 
-        # 影片分支。
         "video": note["video"],
         "videos": [note["video"]] if note["video"] else [],
 
-        # 實況分支：捷徑已確認 nt 必須包含 livepic。
         "livepic": live_pairs,
         "livepics": live_pairs,
         "live": live_pairs,
