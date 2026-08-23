@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>XHS Pro 啟用</title>
+  <style>
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fb}*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px}.card{width:min(100%,560px);background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:24px;box-shadow:0 12px 40px #0f172a14}h1{margin:0 0 8px}.muted{color:#64748b;line-height:1.6}.code{font:700 20px ui-monospace,SFMono-Regular,Menlo,monospace;background:#f8fafc;border:1px dashed #94a3b8;border-radius:12px;padding:15px;word-break:break-all;margin:18px 0}button{width:100%;border:0;border-radius:12px;padding:13px;background:#2563eb;color:#fff;font:700 16px inherit;cursor:pointer}.status{min-height:24px;margin-top:12px;color:#166534}.steps{margin:18px 0 0;padding-left:20px;color:#475569;line-height:1.7}.warn{margin-top:16px;font-size:13px;color:#64748b}</style>
+</head>
+<body><main class="card"><h1>XHS Pro 啟用碼</h1><div class="muted">管理員已提供一組啟用碼給你。複製後貼到 XHS Pro 捷徑的「激活码」欄位即可。</div><div id="code" class="code">未提供啟用碼</div><button id="copy" type="button">複製啟用碼</button><div id="status" class="status" aria-live="polite"></div><ol class="steps"><li>複製上方啟用碼。</li><li>打開 XHS Pro 捷徑設定。</li><li>把啟用碼貼到「激活码」。</li><li>第一次執行時會自動綁定這台 iPhone。</li></ol><div class="warn">啟用碼可能限制裝置數量與有效期限，請不要轉傳給未授權的人。</div></main><script>const params=new URLSearchParams(location.search),code=(params.get('code')||'').trim(),el=document.getElementById('code'),btn=document.getElementById('copy'),status=document.getElementById('status');if(code){el.textContent=code}else{btn.disabled=true}btn.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(code);status.textContent='已複製啟用碼'}catch{status.textContent='無法自動複製，請長按啟用碼手動複製'}});</script></body></html>
