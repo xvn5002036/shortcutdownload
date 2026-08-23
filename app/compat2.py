@@ -1,0 +1,171 @@
+from __future__ import annotations
+
+from urllib.parse import quote, urlparse
+from urllib.request import Request as URLRequest, urlopen
+
+from fastapi import HTTPException, Query
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
+
+from .compat import (
+    UA,
+    PUBLIC_BASE,
+    app,
+    inspect_note,
+    log_request,
+    normalize_xhs_url,
+    proxy_image_url,
+    verify_and_bind,
+)
+
+# 移除 compat.py 的舊 /xhszshq，保留 /media/image。
+app.router.routes[:] = [
+    route for route in app.router.routes
+    if getattr(route, "path", None) not in {"/xhszshq", "/media/video"}
+]
+
+
+def proxy_video_url(remote_url: str) -> str:
+    if not remote_url:
+        return ""
+    return f"{PUBLIC_BASE}/media/video?url={quote(remote_url, safe='')}"
+
+
+def is_allowed_remote_video(value: str) -> bool:
+    try:
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        return parsed.scheme in {"http", "https"} and (
+            "xhscdn.com" in host
+            or "xiaohongshu.com" in host
+            or "xhslink.com" in host
+        )
+    except Exception:
+        return False
+
+
+@app.get("/media/video")
+def media_video(url: str = Query(...)):
+    if not is_allowed_remote_video(url):
+        raise HTTPException(status_code=400, detail="unsupported video host")
+    try:
+        req = URLRequest(url, headers={
+            "User-Agent": UA,
+            "Accept": "video/mp4,video/*;q=0.9,*/*;q=0.8",
+            "Referer": "https://www.xiaohongshu.com/",
+        })
+        with urlopen(req, timeout=40) as resp:
+            data = resp.read(120 * 1024 * 1024)
+            media_type = resp.headers.get_content_type() or "video/mp4"
+            if not media_type.startswith("video/"):
+                media_type = "video/mp4"
+            return Response(
+                content=data,
+                media_type=media_type,
+                headers={"Cache-Control": "public, max-age=1800"},
+            )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"video fetch failed: {type(exc).__name__}")
+
+
+@app.get("/xhszshq")
+def xhszshq_gate(
+    a: str = Query(default=""),
+    b: str = Query(default="ios"),
+    c: str = Query(default=""),
+    device_id: str = Query(default=""),
+):
+    ok, reason = verify_and_bind(a, device_id, b)
+    log_request(a, device_id, b, reason, c)
+    if not ok:
+        return PlainTextResponse("0")
+
+    note = inspect_note(c)
+    note_url = note["resolved_url"] or normalize_xhs_url(c)
+
+    if not note["nt"]:
+        return JSONResponse({
+            "error": "parse_failed",
+            "message": "無法解析該筆記媒體",
+            "note_url": note_url,
+        })
+
+    raw_images = note["images"]
+    images = [proxy_image_url(x) for x in raw_images]
+    first_image = images[0] if images else ""
+
+    # 已從捷徑畫面確認：
+    # 1. 圖片分支讀 GATE.gigl
+    # 2. 實況分支讀 GATE.ligl，每個項目再讀 cover / livevideo
+    # 3. 實況分支結束後會再讀 GATE.nigl 保存普通圖片
+    live_images_raw = note["live_images"] or (raw_images if note["nt"] == "livepic" else [])
+    live_covers = [proxy_image_url(x) for x in live_images_raw]
+    raw_live_videos = note["live_videos"]
+    live_videos = [proxy_video_url(x) for x in raw_live_videos]
+
+    ligl = []
+    for index, cover in enumerate(live_covers):
+        video = ""
+        if live_videos:
+            video = live_videos[index] if index < len(live_videos) else live_videos[0]
+        if cover and video:
+            ligl.append({
+                "cover": cover,
+                "livevideo": video,
+                # 保留相容別名，但捷徑正式使用上面兩個鍵。
+                "image": cover,
+                "video": video,
+            })
+
+    live_cover_set = set(live_covers)
+    nigl = [x for x in images if x not in live_cover_set] if note["nt"] == "livepic" else []
+    gigl = images if note["nt"] == "pic" else []
+
+    first_live_cover = live_covers[0] if live_covers else ""
+    first_live_video = live_videos[0] if live_videos else ""
+
+    payload = {
+        "status": 1,
+        "gate": 1,
+        "notetype": note["notetype"],
+        "nt": note["nt"],
+        "note_url": note_url,
+        "source_url": note_url,
+        "title": note["title"],
+        "author": note["author"],
+
+        # 正式依捷徑欄位命名。
+        "gigl": gigl,
+        "ligl": ligl,
+        "nigl": nigl,
+
+        # 其餘欄位保留相容性。
+        "url": (
+            first_image if note["nt"] == "pic"
+            else first_live_cover if note["nt"] == "livepic"
+            else (note["video"] or note_url)
+        ),
+        "image": first_image,
+        "images": images,
+        "pic": first_image,
+        "pics": images,
+        "video": note["video"],
+        "videos": [note["video"]] if note["video"] else [],
+        "livepic": ligl,
+        "livepics": ligl,
+        "live": ligl,
+        "livephoto": ligl,
+        "livePhoto": ligl,
+        "live_photos": ligl,
+        "live_image": first_live_cover,
+        "live_images": live_covers,
+        "live_video": first_live_video,
+        "live_videos": live_videos,
+        "cover": first_live_cover,
+        "livevideo": first_live_video,
+        "image_count": len(images),
+        "live_count": len(ligl),
+        "normal_count": len(nigl),
+        "parser": note["parser"],
+        "message": "ok",
+    }
+    return JSONResponse(payload)
