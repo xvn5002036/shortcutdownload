@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import os
+import secrets
 import shutil
 import socket
 import subprocess
@@ -11,8 +13,9 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, status
 from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, Field
 
 from .db import (
@@ -27,7 +30,6 @@ from .db import (
     verify_and_bind,
 )
 
-
 ALLOWED_HOSTS = {
     "facebook.com", "www.facebook.com", "m.facebook.com", "fb.watch",
     "instagram.com", "www.instagram.com",
@@ -39,10 +41,15 @@ ALLOWED_HOSTS = {
 }
 MAX_BYTES = int(os.getenv("MAX_DOWNLOAD_MB", "250")) * 1024 * 1024
 TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
-API_KEY = os.getenv("DOWNLOAD_API_KEY", "")
-ADMIN_TOKEN = os.getenv("XHS_ADMIN_TOKEN", "change-me")
 
-app = FastAPI(title="XHS Pro System", version="1.1.0")
+# 固定驗證值以 SHA-256 寫死，避免把實際密鑰明文提交到公開 GitHub。
+# 管理員帳號固定為 admin，密碼使用先前設定的管理員權杖。
+ADMIN_USERNAME = "admin"
+ADMIN_TOKEN_SHA256 = "8827d2cb4a89abd6a61fe462412ae6134d3ceee19ef1f60cc5f891282ecc044b"
+DOWNLOAD_API_KEY_SHA256 = "bfd281cee986f99552a49a05b4a88d9740412fa123a5b6efdc852ff9d5697f7b"
+
+security = HTTPBasic()
+app = FastAPI(title="XHS Pro System", version="1.2.0")
 
 
 class DownloadRequest(BaseModel):
@@ -56,8 +63,34 @@ class LicenseCreateRequest(BaseModel):
     key: str | None = Field(default=None, max_length=100)
 
 
+class BatchLicenseCreateRequest(BaseModel):
+    count: int = Field(default=10, ge=1, le=100)
+    days: int | None = Field(default=30, ge=1, le=3650)
+    max_devices: int = Field(default=1, ge=1, le=50)
+    note: str = Field(default="", max_length=500)
+
+
 class StatusRequest(BaseModel):
     status: str
+
+
+def hash_matches(value: str | None, expected_hash: str) -> bool:
+    if not value:
+        return False
+    actual = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(actual, expected_hash)
+
+
+def require_admin(credentials: HTTPBasicCredentials = Depends(security)) -> str:
+    username_ok = secrets.compare_digest(credentials.username, ADMIN_USERNAME)
+    password_ok = hash_matches(credentials.password, ADMIN_TOKEN_SHA256)
+    if not username_ok or not password_ok:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="管理員帳號或密碼錯誤",
+            headers={"WWW-Authenticate": "Basic realm=\"XHS Pro Admin\""},
+        )
+    return credentials.username
 
 
 def validate_url(raw_url: str) -> str:
@@ -79,13 +112,8 @@ def validate_url(raw_url: str) -> str:
 
 
 def check_key(value: str | None) -> None:
-    if API_KEY and value != API_KEY:
+    if not hash_matches(value, DOWNLOAD_API_KEY_SHA256):
         raise HTTPException(401, "API 金鑰錯誤")
-
-
-def check_admin(value: str | None) -> None:
-    if not value or value != ADMIN_TOKEN:
-        raise HTTPException(401, "管理員權杖錯誤")
 
 
 def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
@@ -117,7 +145,6 @@ def build_download(raw_url: str) -> tuple[Path, Path]:
     ]
     yt_code, yt_error = run_command(yt_command, folder)
     files = media_files(folder)
-
     input_host = (urlparse(raw_url).hostname or "").lower()
     if not files and (input_host.endswith("xiaohongshu.com") or input_host.endswith("xhslink.com")):
         image_command = [
@@ -172,8 +199,13 @@ def home() -> str:
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_page() -> str:
+def admin_page(_: str = Depends(require_admin)) -> str:
     return Path(__file__).with_name("admin.html").read_text(encoding="utf-8")
+
+
+@app.get("/join", response_class=HTMLResponse)
+def join_page() -> str:
+    return Path(__file__).with_name("join.html").read_text(encoding="utf-8")
 
 
 @app.get("/xhszshq", response_class=PlainTextResponse)
@@ -183,24 +215,13 @@ def xhszshq(
     c: str = Query(default=""),
     device_id: str = Query(default=""),
 ) -> str:
-    """Compatibility endpoint for the iOS Shortcut.
-
-    Current phase reproduces the verified activation/device-binding behavior:
-    invalid/disabled/expired/device-limit -> 0, success -> 1.
-    The remaining original payload semantics will be filled in as the shortcut
-    workflow is decoded and compared action-by-action.
-    """
     ok, reason = verify_and_bind(a, device_id, b)
     log_request(a, device_id, b, reason, c)
     return "1" if ok else "0"
 
 
 @app.get("/api/verify")
-def verify_license(
-    license_key: str,
-    device_id: str,
-    platform: str = "ios",
-):
+def verify_license(license_key: str, device_id: str, platform: str = "ios"):
     ok, reason = verify_and_bind(license_key, device_id, platform)
     log_request(license_key, device_id, platform, reason)
     return {"success": ok, "reason": reason}
@@ -227,17 +248,12 @@ async def download(
 
 
 @app.get("/api/admin/licenses")
-def admin_list_licenses(x_admin_token: str | None = Header(default=None)):
-    check_admin(x_admin_token)
+def admin_list_licenses(_: str = Depends(require_admin)):
     return {"items": list_licenses()}
 
 
 @app.post("/api/admin/licenses")
-def admin_create_license(
-    request: LicenseCreateRequest,
-    x_admin_token: str | None = Header(default=None),
-):
-    check_admin(x_admin_token)
+def admin_create_license(request: LicenseCreateRequest, _: str = Depends(require_admin)):
     try:
         item = create_license(days=request.days, max_devices=request.max_devices, note=request.note, key=request.key)
     except Exception as exc:
@@ -245,13 +261,16 @@ def admin_create_license(
     return item
 
 
+@app.post("/api/admin/licenses/batch")
+def admin_create_batch(request: BatchLicenseCreateRequest, _: str = Depends(require_admin)):
+    created = []
+    for _index in range(request.count):
+        created.append(create_license(days=request.days, max_devices=request.max_devices, note=request.note))
+    return {"items": created, "count": len(created)}
+
+
 @app.patch("/api/admin/licenses/{license_id}/status")
-def admin_change_status(
-    license_id: int,
-    request: StatusRequest,
-    x_admin_token: str | None = Header(default=None),
-):
-    check_admin(x_admin_token)
+def admin_change_status(license_id: int, request: StatusRequest, _: str = Depends(require_admin)):
     try:
         set_license_status(license_id, request.status)
     except ValueError as exc:
@@ -260,29 +279,22 @@ def admin_change_status(
 
 
 @app.delete("/api/admin/licenses/{license_id}")
-def admin_delete_license(license_id: int, x_admin_token: str | None = Header(default=None)):
-    check_admin(x_admin_token)
+def admin_delete_license(license_id: int, _: str = Depends(require_admin)):
     delete_license(license_id)
     return {"success": True}
 
 
 @app.get("/api/admin/devices")
-def admin_list_devices(x_admin_token: str | None = Header(default=None)):
-    check_admin(x_admin_token)
+def admin_list_devices(_: str = Depends(require_admin)):
     return {"items": list_devices()}
 
 
 @app.delete("/api/admin/devices/{device_row_id}")
-def admin_unbind_device(device_row_id: int, x_admin_token: str | None = Header(default=None)):
-    check_admin(x_admin_token)
+def admin_unbind_device(device_row_id: int, _: str = Depends(require_admin)):
     unbind_device(device_row_id)
     return {"success": True}
 
 
 @app.get("/api/admin/logs")
-def admin_logs(
-    limit: int = Query(default=200, ge=1, le=1000),
-    x_admin_token: str | None = Header(default=None),
-):
-    check_admin(x_admin_token)
+def admin_logs(limit: int = Query(default=200, ge=1, le=1000), _: str = Depends(require_admin)):
     return {"items": list_logs(limit)}
