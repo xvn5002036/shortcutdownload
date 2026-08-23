@@ -38,10 +38,6 @@ struct MakeLivePhotoIntent: AppIntent {
     @Parameter(title: "影片")
     var video: IntentFile
 
-    static var parameterSummary: some ParameterSummary {
-        Summary("用 \(.$photo) 和 \(.$video) 生成 Live Photo")
-    }
-
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let result = await ShortcutMediaBridge.shared.makeLivePhoto(
             photoData: photo.data,
