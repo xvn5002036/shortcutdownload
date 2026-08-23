@@ -33,10 +33,10 @@ struct MakeLivePhotoIntent: AppIntent {
     static var description = IntentDescription("接收一張圖片與一段影片，直接生成 Live Photo 並存入照片圖庫。")
     static var openAppWhenRun = false
 
-    @Parameter(title: "圖片", supportedTypeIdentifiers: [UTType.image.identifier])
+    @Parameter(title: "圖片", supportedContentTypes: [.image])
     var photo: IntentFile
 
-    @Parameter(title: "影片", supportedTypeIdentifiers: [UTType.movie.identifier, UTType.video.identifier])
+    @Parameter(title: "影片", supportedContentTypes: [.movie, .video])
     var video: IntentFile
 
     static var parameterSummary: some ParameterSummary {
