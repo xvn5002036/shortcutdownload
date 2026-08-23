@@ -24,6 +24,10 @@ app.router.routes[:] = [
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
 PUBLIC_BASE = "https://shortcutdownload.onrender.com"
 ALLOWED_IMAGE_HOST_TOKENS = ("xhscdn", "sns-img", "qpic", "alicdn")
+LIVE_MARKERS = (
+    "livephoto", "live_photo", "livepic", "motionphoto", "motion_photo",
+    "isLivePhoto", "livePhoto", "live_photo_file_id",
+)
 
 
 def normalize_xhs_url(value: str) -> str:
@@ -80,6 +84,16 @@ def looks_like_image(value: str) -> bool:
     return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif"))
 
 
+def looks_like_video(value: str) -> bool:
+    low = value.lower()
+    if not low.startswith(("http://", "https://")):
+        return False
+    path = urlparse(value).path.lower()
+    if path.endswith((".mp4", ".mov", ".m4v", ".webm")):
+        return True
+    return any(token in low for token in ("video", "stream", "playurl", "masterurl")) and "xhscdn" in low
+
+
 def is_allowed_remote_image(value: str) -> bool:
     try:
         parsed = urlparse(value)
@@ -95,7 +109,7 @@ def proxy_image_url(remote_url: str) -> str:
     return f"{PUBLIC_BASE}/media/image?url={quote(remote_url, safe='')}"
 
 
-def extract_images_from_html(url: str) -> tuple[str, list[str]]:
+def extract_media_from_html(url: str) -> tuple[str, list[str], list[str], bool]:
     try:
         req = URLRequest(url, headers={
             "User-Agent": UA,
@@ -105,54 +119,78 @@ def extract_images_from_html(url: str) -> tuple[str, list[str]]:
         })
         with urlopen(req, timeout=20) as resp:
             final_url = resp.geturl() or url
-            raw = resp.read(4 * 1024 * 1024).decode("utf-8", errors="ignore")
+            raw = resp.read(6 * 1024 * 1024).decode("utf-8", errors="ignore")
     except Exception:
-        return url, []
+        return url, [], [], False
+
+    decoded = html.unescape(raw)
+    normalized = decoded.replace("\\u002F", "/").replace("\\/", "/").replace("\\u0026", "&")
+    live_hint = any(marker.lower() in normalized.lower() for marker in LIVE_MARKERS)
 
     candidates: list[str] = []
-    decoded = html.unescape(raw)
-    variants = [raw, decoded, decoded.replace("\\u002F", "/").replace("\\/", "/").replace("\\u0026", "&")]
     patterns = [
-        r'https?:\\?/\\?/[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+',
-        r'"(?:urlDefault|urlPre|url|imageUrl|image_url)"\s*:\s*"([^"]+)"',
+        r'https?://[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+',
+        r'"(?:urlDefault|urlPre|url|imageUrl|image_url|videoUrl|video_url|masterUrl|master_url|playUrl|play_url)"\s*:\s*"([^"]+)"',
     ]
-    for text in variants:
+    for text in (raw, decoded, normalized):
         for pattern in patterns:
             for match in re.finditer(pattern, text):
-                value = match.group(1) if match.lastindex else match.group(0)
-                value = clean_url(value)
-                if looks_like_image(value):
+                value = clean_url(match.group(1) if match.lastindex else match.group(0))
+                if value.startswith(("http://", "https://")):
                     candidates.append(value)
-    return final_url, dedupe(candidates)
+
+    candidates = dedupe(candidates)
+    images = dedupe([x for x in candidates if looks_like_image(x)])
+    videos = dedupe([x for x in candidates if looks_like_video(x)])
+    return final_url, images, videos, live_hint
 
 
-def inspect_with_gallery_dl(url: str) -> list[str]:
+def inspect_with_gallery_dl(url: str) -> tuple[list[str], list[str]]:
     commands = [["gallery-dl", "--get-urls", url], ["gallery-dl", "-g", url]]
     for command in commands:
         try:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
             if proc.returncode == 0 and proc.stdout.strip():
-                urls = [clean_url(line.strip()) for line in proc.stdout.splitlines()]
+                urls = dedupe([clean_url(line.strip()) for line in proc.stdout.splitlines()])
                 images = dedupe([x for x in urls if looks_like_image(x)])
-                if images:
-                    return images
+                videos = dedupe([x for x in urls if looks_like_video(x)])
+                if images or videos:
+                    return images, videos
         except Exception:
             pass
-    return []
+    return [], []
 
 
 def inspect_note(input_url: str) -> dict:
     result = {
         "notetype": "", "nt": "", "title": "", "author": "", "video": "",
-        "images": [], "resolved_url": resolve_url(input_url), "parser": "none",
+        "images": [], "live_images": [], "live_videos": [],
+        "resolved_url": resolve_url(input_url), "parser": "none", "live_hint": False,
     }
     url = result["resolved_url"] or normalize_xhs_url(input_url)
     if not url:
         return result
 
+    final_url, html_images, html_videos, live_hint = extract_media_from_html(url)
+    if final_url:
+        result["resolved_url"] = final_url
+    result["images"] = html_images
+    result["live_videos"] = html_videos
+    result["live_hint"] = live_hint
+    if html_images or html_videos:
+        result["parser"] = "html"
+
+    # Live Photo / 實況圖優先判斷。捷徑已確認以 nt 包含 livepic 分流。
+    if live_hint and html_images and html_videos:
+        result["notetype"] = "livepic"
+        result["nt"] = "livepic"
+        result["live_images"] = html_images
+        result["live_videos"] = html_videos
+        return result
+
     try:
         proc = subprocess.run(
-            ["yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist", url],
+            ["yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist", result["resolved_url"] or url],
             capture_output=True, text=True, timeout=45, check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip():
@@ -175,22 +213,23 @@ def inspect_note(input_url: str) -> dict:
                 return result
             thumbs = info.get("thumbnails") or []
             thumb_urls = [str(x.get("url")) for x in thumbs if isinstance(x, dict) and x.get("url")]
-            result["images"] = dedupe([x for x in thumb_urls if looks_like_image(x)])
+            result["images"] = dedupe(result["images"] + [x for x in thumb_urls if looks_like_image(x)])
     except Exception:
         pass
 
-    final_url, html_images = extract_images_from_html(url)
-    if final_url:
-        result["resolved_url"] = final_url
-    if html_images:
-        result["images"] = dedupe(result["images"] + html_images)
-        result["parser"] = "html"
-
-    gallery_images = inspect_with_gallery_dl(result["resolved_url"] or url)
+    gallery_images, gallery_videos = inspect_with_gallery_dl(result["resolved_url"] or url)
     if gallery_images:
         result["images"] = dedupe(result["images"] + gallery_images)
-        if result["parser"] == "none":
-            result["parser"] = "gallery-dl"
+    if gallery_videos:
+        result["live_videos"] = dedupe(result["live_videos"] + gallery_videos)
+    if gallery_images or gallery_videos:
+        result["parser"] = "gallery-dl" if result["parser"] == "none" else result["parser"] + "+gallery-dl"
+
+    if result["live_hint"] and result["images"] and result["live_videos"]:
+        result["notetype"] = "livepic"
+        result["nt"] = "livepic"
+        result["live_images"] = result["images"]
+        return result
 
     if result["images"]:
         result["notetype"] = "pic"
@@ -239,20 +278,41 @@ def xhszshq_gate(
     first_image = images[0] if images else ""
     note_url = note["resolved_url"] or normalize_xhs_url(c)
 
-    # 單數欄位回傳「單一網址」，複數欄位回傳「完整清單」。
-    # 這可相容 Shortcut 將單數欄位直接交給「取得 URL 內容」的情況。
+    live_images_raw = note["live_images"] or (raw_images if note["nt"] == "livepic" else [])
+    live_images = [proxy_image_url(x) for x in live_images_raw]
+    live_videos = note["live_videos"]
+    live_pairs = [
+        {"image": live_images[i], "video": live_videos[i] if i < len(live_videos) else (live_videos[0] if live_videos else "")}
+        for i in range(len(live_images))
+    ]
+    first_live_image = live_images[0] if live_images else ""
+    first_live_video = live_videos[0] if live_videos else ""
+
+    # 真正解析失敗才回 error。成功的 pic/video/livepic 回應完全不含 error 欄位。
+    if not note["nt"]:
+        logger.info("XHS_GATE_PARSE_FAILED source=%s parser=%s", note_url, note["parser"])
+        return JSONResponse({
+            "error": "parse_failed",
+            "message": "無法解析該筆記媒體",
+            "note_url": note_url,
+        })
+
     payload = {
         "status": 1,
         "gate": 1,
         "notetype": note["notetype"],
         "nt": note["nt"],
-        "url": first_image if note["nt"] == "pic" else (note["video"] or note_url),
-        "urls": images,
+        "url": (
+            first_image if note["nt"] == "pic"
+            else first_live_image if note["nt"] == "livepic"
+            else (note["video"] or note_url)
+        ),
         "note_url": note_url,
         "source_url": note_url,
         "title": note["title"],
         "author": note["author"],
 
+        # 圖片分支：單數欄位單一網址，複數欄位完整清單。
         "image": first_image,
         "images": images,
         "pic": first_image,
@@ -263,58 +323,46 @@ def xhszshq_gate(
         "photos": images,
         "original": first_image,
         "originals": images,
-        "media": first_image,
-        "mediaList": images,
-
+        "urls": images,
         "imageList": images,
         "image_list": images,
         "picList": images,
         "pic_list": images,
-        "url_list": images,
-        "original_images": images,
         "imageUrls": images,
         "image_urls": images,
-        "imgUrls": images,
-        "img_urls": images,
-        "downloadUrls": images,
-        "download_urls": images,
         "picurl": first_image,
         "picurls": images,
         "picUrl": first_image,
         "picUrls": images,
-        "imgurl": first_image,
-        "imgurls": images,
-        "imgUrl": first_image,
-        "photoUrls": images,
-        "photo_urls": images,
-        "origin": first_image,
-        "originUrls": images,
-        "origin_urls": images,
-        "originalUrls": images,
-        "original_urls": images,
-        "media_list": images,
-        "data": images,
 
-        "first_image": first_image,
-        "image_url": first_image,
-        "pic_url": first_image,
-        "img_url": first_image,
-        "photo_url": first_image,
-        "raw_images": raw_images,
-        "raw_first_image": raw_images[0] if raw_images else "",
+        # 影片分支。
         "video": note["video"],
         "videos": [note["video"]] if note["video"] else [],
-        "live": [],
-        "livephoto": [],
-        "livePhoto": [],
-        "live_photos": [],
+
+        # 實況分支：捷徑已確認 nt 必須包含 livepic。
+        "livepic": live_pairs,
+        "livepics": live_pairs,
+        "live": live_pairs,
+        "livephoto": live_pairs,
+        "livePhoto": live_pairs,
+        "live_photos": live_pairs,
+        "live_image": first_live_image,
+        "live_images": live_images,
+        "livepic_image": first_live_image,
+        "livepic_images": live_images,
+        "live_video": first_live_video,
+        "live_videos": live_videos,
+        "livepic_video": first_live_video,
+        "livepic_videos": live_videos,
+
         "image_count": len(images),
+        "live_count": len(live_pairs),
         "parser": note["parser"],
-        "message": "gate-json-media-proxy-v9" if images or note["video"] else "parse_failed_no_media",
+        "message": "ok",
     }
 
     logger.info(
-        "XHS_GATE_RESULT nt=%s image_count=%s parser=%s source=%s",
-        note["nt"], len(images), note["parser"], note_url,
+        "XHS_GATE_RESULT nt=%s image_count=%s live_count=%s parser=%s source=%s",
+        note["nt"], len(images), len(live_pairs), note["parser"], note_url,
     )
     return JSONResponse(payload)
