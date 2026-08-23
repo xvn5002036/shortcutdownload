@@ -93,35 +93,65 @@ def _balanced_object(text: str, start: int, max_len: int = 700_000) -> str:
     return ""
 
 
+def _clean_image(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = clean_url(value)
+    return value if _allowed_scoped_image(value) else ""
+
+
 def _item_image_url(item) -> str:
+    """從 exact note 的單張 image item 中優先選真正原圖。
+
+    之前先取 urlDefault，該欄位在部分分享頁是展示/帶浮水印版本；
+    現在 original/origin/source 類欄位永遠優先，其次才使用一般展示 URL。
+    """
     if isinstance(item, str):
-        return clean_url(item) if _allowed_scoped_image(clean_url(item)) else ""
+        return _clean_image(item)
     if not isinstance(item, dict):
         return ""
 
-    keys = (
-        "urlDefault", "originalUrl", "original_url", "urlPre", "url",
-        "imageUrl", "image_url", "url_default", "url_pre",
+    # 1. 明確原圖欄位先取。
+    original_keys = (
+        "originalUrl", "original_url", "urlOriginal", "url_original",
+        "originUrl", "origin_url", "sourceUrl", "source_url",
+        "rawUrl", "raw_url",
     )
-    for key in keys:
-        value = item.get(key)
-        if isinstance(value, str):
-            value = clean_url(value)
-            if _allowed_scoped_image(value):
-                return value
+    for key in original_keys:
+        value = _clean_image(item.get(key))
+        if value:
+            return value
 
+    # 2. infoList 有時同時放預覽與原圖；先挑 ORIGINAL/ORIGIN/RAW 類 scene。
     for info_key in ("infoList", "info_list"):
         info = item.get(info_key)
-        if isinstance(info, list):
-            for row in info:
-                if not isinstance(row, dict):
-                    continue
-                for key in ("url", "urlDefault", "urlPre", "originalUrl"):
-                    value = row.get(key)
-                    if isinstance(value, str):
-                        value = clean_url(value)
-                        if _allowed_scoped_image(value):
-                            return value
+        if not isinstance(info, list):
+            continue
+        ranked = []
+        for index, row in enumerate(info):
+            if not isinstance(row, dict):
+                continue
+            scene = str(row.get("imageScene") or row.get("image_scene") or row.get("scene") or "").upper()
+            if any(token in scene for token in ("ORIGINAL", "ORIGIN", "RAW", "SOURCE")):
+                rank = 0
+            elif "DFT" in scene or "DEFAULT" in scene:
+                rank = 1
+            elif "PRE" in scene or "PRV" in scene or "THUMB" in scene:
+                rank = 3
+            else:
+                rank = 2
+            ranked.append((rank, index, row))
+        for _, _, row in sorted(ranked, key=lambda x: (x[0], x[1])):
+            for key in original_keys + ("url", "urlDefault", "url_default", "urlPre", "url_pre"):
+                value = _clean_image(row.get(key))
+                if value:
+                    return value
+
+    # 3. 最後才退回展示 URL；避免再把 urlDefault 當第一順位。
+    for key in ("url", "imageUrl", "image_url", "urlDefault", "url_default", "urlPre", "url_pre"):
+        value = _clean_image(item.get(key))
+        if value:
+            return value
     return ""
 
 
@@ -196,11 +226,7 @@ def _find_exact_note_images(obj, nid: str, depth: int = 0, seen=None) -> list[st
 
 
 def _same_url_exact_note_images(resolved: str) -> tuple[list[str], str]:
-    """只抓目前網址自己的 HTML，再以 URL 裡的 exact noteId 鎖定物件。
-
-    不掃整頁所有圖片；只有「包含目前 noteId 且物件內有自己的 imageList」才接受。
-    這是 gallery-dl 失敗時的同網址 fallback。
-    """
+    """只抓目前網址自己的 HTML，再以 URL 裡的 exact noteId 鎖定物件。"""
     nid = _note_id_from_url(resolved)
     if not nid:
         return [], "same_url_note_id_missing"
@@ -228,7 +254,6 @@ def _same_url_exact_note_images(resolved: str) -> tuple[list[str], str]:
         for pos in positions[:30]:
             left = max(0, pos - 180_000)
             starts = [m.start() for m in re.finditer(r"\{", text[left:pos])]
-            # 從最靠近 noteId 的物件開始，逐層往外找 enclosing object。
             for rel_start in reversed(starts[-500:]):
                 start = left + rel_start
                 chunk = _balanced_object(text, start)
@@ -246,16 +271,22 @@ def _same_url_exact_note_images(resolved: str) -> tuple[list[str], str]:
                         continue
                     images = _find_exact_note_images(obj, nid)
                     if images:
-                        return images, f"same-url-exact-object-v{variant_index + 1}"
+                        return images, f"same-url-exact-object-original-first-v{variant_index + 1}"
 
     return [], "same_url_exact_note_object_not_found"
 
 
 def inspect_one_url_only(input_url: str) -> tuple[str, list[str], list[str], str]:
-    """一個網址就是一篇文章。先使用 gallery-dl；失敗再只解析同一網址內 exact noteId 物件。"""
+    """一個網址就是一篇文章；圖片優先從 exact note object 取原圖欄位。"""
     resolved = resolve_url(input_url) or normalize_xhs_url(input_url)
     if not resolved:
         return "", [], [], "url_missing"
+
+    # 圖文先讀同網址 exact noteId，因為這裡能分辨 originalUrl 與 urlDefault。
+    # 避免 gallery-dl 先回展示/浮水印 URL 後就提前結束。
+    exact_images, exact_reason = _same_url_exact_note_images(resolved)
+    if exact_images:
+        return resolved, exact_images, [], exact_reason
 
     commands = [
         ["gallery-dl", "--get-urls", resolved],
@@ -276,14 +307,10 @@ def inspect_one_url_only(input_url: str) -> tuple[str, list[str], list[str], str
         images = dedupe([u for u in urls if _allowed_scoped_image(u)])
         videos = dedupe([u for u in urls if _allowed_scoped_video(u)])
         if images or videos:
-            return resolved, images, videos, "gallery-dl-single-url"
+            return resolved, images, videos, "gallery-dl-single-url-fallback"
         last_reason = "gallery_dl_no_supported_media"
 
-    exact_images, exact_reason = _same_url_exact_note_images(resolved)
-    if exact_images:
-        return resolved, exact_images, [], exact_reason
-
-    return resolved, [], [], f"{last_reason}+{exact_reason}"
+    return resolved, [], [], f"{exact_reason}+{last_reason}"
 
 
 def _proxy_images(items: list[str]) -> list[str]:
@@ -335,7 +362,7 @@ def _success_payload(note_url: str, scoped_images: list[str], scoped_videos: lis
         "cover": first_image if nt == "livepic" else "",
         "livevideo": first_video if nt == "livepic" else "",
         "image_count": len(images), "live_count": len(ligl), "normal_count": len(nigl),
-        "parser": scoped_parser, "message": "ok-single-url-scope-v3-exact-object",
+        "parser": scoped_parser, "message": "ok-single-url-original-first-v4",
     })
 
 
@@ -355,7 +382,6 @@ def xhszshq_gate(
     if scoped_images or scoped_videos:
         return _success_payload(note_url, scoped_images, scoped_videos, scoped_parser)
 
-    # 影片才允許 yt-dlp 的 URL 專屬 fallback；圖片不採用 inspect_note 的整頁 HTML 結果。
     fallback = inspect_note(c)
     if fallback.get("nt") == "video" and fallback.get("video"):
         return JSONResponse({
