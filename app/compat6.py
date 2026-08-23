@@ -35,13 +35,12 @@ def _note_id(url: str) -> str:
 
 
 def _unwrap(value):
-    # Vue/ref SSR state sometimes wraps values as {_value: ...} or {value: ...}.
-    for _ in range(4):
+    for _ in range(6):
         if isinstance(value, dict):
-            if "_value" in value and len(value) <= 3:
+            if "_value" in value and len(value) <= 4:
                 value = value["_value"]
                 continue
-            if "value" in value and len(value) <= 3:
+            if "value" in value and len(value) <= 4:
                 value = value["value"]
                 continue
         break
@@ -69,7 +68,6 @@ def _one_image_url(item) -> str:
     if not isinstance(item, dict):
         return ""
 
-    # imageList item itself only. Do not recursively walk the whole page/note object.
     for key in (
         "urlDefault", "originalUrl", "original_url", "urlPre", "url",
         "imageUrl", "image_url", "url_default", "url_pre",
@@ -82,7 +80,6 @@ def _one_image_url(item) -> str:
 
     info = _unwrap(item.get("infoList") or item.get("info_list"))
     if isinstance(info, list):
-        # Prefer original/default entries if type/name metadata is present.
         ranked = []
         for entry in info:
             entry = _unwrap(entry)
@@ -108,12 +105,7 @@ def _one_image_url(item) -> str:
 
 
 def _parse_initial_state(text: str):
-    markers = (
-        "window.__INITIAL_STATE__",
-        "window.__INITIAL_STATE__=",
-        "__INITIAL_STATE__",
-    )
-    for marker in markers:
+    for marker in ("window.__INITIAL_STATE__", "__INITIAL_STATE__"):
         pos = text.find(marker)
         if pos < 0:
             continue
@@ -131,24 +123,52 @@ def _parse_initial_state(text: str):
 
 
 def _find_note_detail_map(state):
-    state = _unwrap(state)
-    if not isinstance(state, dict):
+    """在 INITIAL_STATE 內尋找 noteDetailMap；找到後仍會用 exact noteId 鎖定當前文章。"""
+    seen: set[int] = set()
+
+    def walk(value, depth: int = 0):
+        if depth > 12:
+            return None
+        value = _unwrap(value)
+        if isinstance(value, dict):
+            oid = id(value)
+            if oid in seen:
+                return None
+            seen.add(oid)
+
+            for key in ("noteDetailMap", "note_detail_map"):
+                detail = _unwrap(value.get(key))
+                if isinstance(detail, dict):
+                    return detail
+
+            # 優先搜尋常見筆記狀態容器，再搜尋其餘欄位。
+            priority = ("note", "noteData", "note_data", "data", "detail", "detailData", "detail_data")
+            for key in priority:
+                if key in value:
+                    found = walk(value.get(key), depth + 1)
+                    if found is not None:
+                        return found
+            for key, child in value.items():
+                if key in priority:
+                    continue
+                found = walk(child, depth + 1)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for child in value[:200]:
+                found = walk(child, depth + 1)
+                if found is not None:
+                    return found
         return None
-    note = _unwrap(state.get("note"))
-    if isinstance(note, dict):
-        detail = _unwrap(note.get("noteDetailMap") or note.get("note_detail_map"))
-        if isinstance(detail, dict):
-            return detail
-    return None
+
+    return walk(state)
 
 
 def _find_note_entry(detail_map: dict, nid: str):
-    # Exact key first; no recommendation/comment fallback.
     direct = _unwrap(detail_map.get(nid))
     if isinstance(direct, dict):
         return direct
 
-    # Some SSR states key entries differently but store noteId inside the exact note entry.
     for value in detail_map.values():
         value = _unwrap(value)
         if not isinstance(value, dict):
@@ -188,7 +208,7 @@ def extract_state_note_images(note_url: str) -> tuple[list[str], str]:
 
     detail_map = _find_note_detail_map(state)
     if not isinstance(detail_map, dict):
-        return [], "note_detail_map_missing"
+        return [], "note_detail_map_missing_recursive"
 
     entry = _find_note_entry(detail_map, nid)
     if not isinstance(entry, dict):
@@ -205,7 +225,7 @@ def extract_state_note_images(note_url: str) -> tuple[list[str], str]:
     images = dedupe([u for u in (_one_image_url(item) for item in image_list) if u])
     if not images:
         return [], "current_note_image_list_empty"
-    return images, "initial_state.note.noteDetailMap.current.imageList"
+    return images, "initial_state.recursive_noteDetailMap.current.imageList"
 
 
 def _proxy(items: list[str]) -> list[str]:
@@ -228,7 +248,6 @@ def xhszshq_gate(
     note = inspect_note(c)
     note_url = note["resolved_url"] or normalize_xhs_url(c)
 
-    # For any non-video note, media list MUST come from the current note's own noteDetailMap entry.
     if note["nt"] != "video":
         exact_images, exact_parser = extract_state_note_images(note_url)
         if not exact_images:
@@ -310,5 +329,5 @@ def xhszshq_gate(
         "live_count": len(ligl),
         "normal_count": len(nigl),
         "parser": note["parser"],
-        "message": "ok-current-note-initial-state-v1",
+        "message": "ok-current-note-initial-state-v2",
     })
