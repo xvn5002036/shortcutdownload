@@ -11,9 +11,21 @@ import zipfile
 from pathlib import Path
 from urllib.parse import urlparse
 
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Query
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
+
+from .db import (
+    create_license,
+    delete_license,
+    list_devices,
+    list_licenses,
+    list_logs,
+    log_request,
+    set_license_status,
+    unbind_device,
+    verify_and_bind,
+)
 
 
 ALLOWED_HOSTS = {
@@ -28,12 +40,24 @@ ALLOWED_HOSTS = {
 MAX_BYTES = int(os.getenv("MAX_DOWNLOAD_MB", "250")) * 1024 * 1024
 TIMEOUT_SECONDS = int(os.getenv("DOWNLOAD_TIMEOUT_SECONDS", "180"))
 API_KEY = os.getenv("DOWNLOAD_API_KEY", "")
+ADMIN_TOKEN = os.getenv("XHS_ADMIN_TOKEN", "change-me")
 
-app = FastAPI(title="iPhone 媒體下載器", version="1.0.0")
+app = FastAPI(title="XHS Pro System", version="1.1.0")
 
 
 class DownloadRequest(BaseModel):
     url: str = Field(min_length=10, max_length=2048)
+
+
+class LicenseCreateRequest(BaseModel):
+    days: int | None = Field(default=None, ge=1, le=3650)
+    max_devices: int = Field(default=1, ge=1, le=50)
+    note: str = Field(default="", max_length=500)
+    key: str | None = Field(default=None, max_length=100)
+
+
+class StatusRequest(BaseModel):
+    status: str
 
 
 def validate_url(raw_url: str) -> str:
@@ -57,6 +81,11 @@ def validate_url(raw_url: str) -> str:
 def check_key(value: str | None) -> None:
     if API_KEY and value != API_KEY:
         raise HTTPException(401, "API 金鑰錯誤")
+
+
+def check_admin(value: str | None) -> None:
+    if not value or value != ADMIN_TOKEN:
+        raise HTTPException(401, "管理員權杖錯誤")
 
 
 def run_command(command: list[str], cwd: Path) -> tuple[int, str]:
@@ -89,8 +118,6 @@ def build_download(raw_url: str) -> tuple[Path, Path]:
     yt_code, yt_error = run_command(yt_command, folder)
     files = media_files(folder)
 
-    # XiaoHongShu exposes photo notes as thumbnails rather than video formats.
-    # Ask its dedicated yt-dlp extractor to save every image when no video exists.
     input_host = (urlparse(raw_url).hostname or "").lower()
     if not files and (input_host.endswith("xiaohongshu.com") or input_host.endswith("xhslink.com")):
         image_command = [
@@ -136,12 +163,47 @@ def build_download(raw_url: str) -> tuple[Path, Path]:
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "service": "xhs-pro-system"}
 
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> str:
     return Path(__file__).with_name("index.html").read_text(encoding="utf-8")
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page() -> str:
+    return Path(__file__).with_name("admin.html").read_text(encoding="utf-8")
+
+
+@app.get("/xhszshq", response_class=PlainTextResponse)
+def xhszshq(
+    a: str = Query(default=""),
+    b: str = Query(default="ios"),
+    c: str = Query(default=""),
+    device_id: str = Query(default=""),
+) -> str:
+    """Compatibility endpoint for the iOS Shortcut.
+
+    Current phase reproduces the verified activation/device-binding behavior:
+    invalid/disabled/expired/device-limit -> 0, success -> 1.
+    The remaining original payload semantics will be filled in as the shortcut
+    workflow is decoded and compared action-by-action.
+    """
+    ok, reason = verify_and_bind(a, device_id, b)
+    log_request(a, device_id, b, reason, c)
+    return "1" if ok else "0"
+
+
+@app.get("/api/verify")
+def verify_license(
+    license_key: str,
+    device_id: str,
+    platform: str = "ios",
+):
+    ok, reason = verify_and_bind(license_key, device_id, platform)
+    log_request(license_key, device_id, platform, reason)
+    return {"success": ok, "reason": reason}
 
 
 @app.post("/api/download")
@@ -162,3 +224,65 @@ async def download(
     background_tasks.add_task(shutil.rmtree, folder, True)
     media_type = "application/zip" if result.suffix == ".zip" else "application/octet-stream"
     return FileResponse(result, filename=result.name, media_type=media_type, background=background_tasks)
+
+
+@app.get("/api/admin/licenses")
+def admin_list_licenses(x_admin_token: str | None = Header(default=None)):
+    check_admin(x_admin_token)
+    return {"items": list_licenses()}
+
+
+@app.post("/api/admin/licenses")
+def admin_create_license(
+    request: LicenseCreateRequest,
+    x_admin_token: str | None = Header(default=None),
+):
+    check_admin(x_admin_token)
+    try:
+        item = create_license(days=request.days, max_devices=request.max_devices, note=request.note, key=request.key)
+    except Exception as exc:
+        raise HTTPException(400, f"建立啟用碼失敗：{exc}") from exc
+    return item
+
+
+@app.patch("/api/admin/licenses/{license_id}/status")
+def admin_change_status(
+    license_id: int,
+    request: StatusRequest,
+    x_admin_token: str | None = Header(default=None),
+):
+    check_admin(x_admin_token)
+    try:
+        set_license_status(license_id, request.status)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"success": True}
+
+
+@app.delete("/api/admin/licenses/{license_id}")
+def admin_delete_license(license_id: int, x_admin_token: str | None = Header(default=None)):
+    check_admin(x_admin_token)
+    delete_license(license_id)
+    return {"success": True}
+
+
+@app.get("/api/admin/devices")
+def admin_list_devices(x_admin_token: str | None = Header(default=None)):
+    check_admin(x_admin_token)
+    return {"items": list_devices()}
+
+
+@app.delete("/api/admin/devices/{device_row_id}")
+def admin_unbind_device(device_row_id: int, x_admin_token: str | None = Header(default=None)):
+    check_admin(x_admin_token)
+    unbind_device(device_row_id)
+    return {"success": True}
+
+
+@app.get("/api/admin/logs")
+def admin_logs(
+    limit: int = Query(default=200, ge=1, le=1000),
+    x_admin_token: str | None = Header(default=None),
+):
+    check_admin(x_admin_token)
+    return {"items": list_logs(limit)}
