@@ -109,7 +109,6 @@ def extract_images_from_html(url: str) -> tuple[str, list[str]]:
     candidates: list[str] = []
     decoded = html.unescape(raw)
     variants = [raw, decoded, decoded.replace("\\u002F", "/").replace("\\/", "/").replace("\\u0026", "&")]
-
     patterns = [
         r'https?:\\?/\\?/[A-Za-z0-9._~:/?#\[\]@!$&\'()*+,;=%-]+',
         r'"(?:urlDefault|urlPre|url|imageUrl|image_url)"\s*:\s*"([^"]+)"',
@@ -121,15 +120,11 @@ def extract_images_from_html(url: str) -> tuple[str, list[str]]:
                 value = clean_url(value)
                 if looks_like_image(value):
                     candidates.append(value)
-
     return final_url, dedupe(candidates)
 
 
 def inspect_with_gallery_dl(url: str) -> list[str]:
-    commands = [
-        ["gallery-dl", "--get-urls", url],
-        ["gallery-dl", "-g", url],
-    ]
+    commands = [["gallery-dl", "--get-urls", url], ["gallery-dl", "-g", url]]
     for command in commands:
         try:
             proc = subprocess.run(command, capture_output=True, text=True, timeout=45, check=False)
@@ -145,14 +140,8 @@ def inspect_with_gallery_dl(url: str) -> list[str]:
 
 def inspect_note(input_url: str) -> dict:
     result = {
-        "notetype": "",
-        "nt": "",
-        "title": "",
-        "author": "",
-        "video": "",
-        "images": [],
-        "resolved_url": resolve_url(input_url),
-        "parser": "none",
+        "notetype": "", "nt": "", "title": "", "author": "", "video": "",
+        "images": [], "resolved_url": resolve_url(input_url), "parser": "none",
     }
     url = result["resolved_url"] or normalize_xhs_url(input_url)
     if not url:
@@ -161,10 +150,7 @@ def inspect_note(input_url: str) -> dict:
     try:
         proc = subprocess.run(
             ["yt-dlp", "--dump-single-json", "--skip-download", "--no-playlist", url],
-            capture_output=True,
-            text=True,
-            timeout=45,
-            check=False,
+            capture_output=True, text=True, timeout=45, check=False,
         )
         if proc.returncode == 0 and proc.stdout.strip():
             info = json.loads(proc.stdout)
@@ -184,7 +170,6 @@ def inspect_note(input_url: str) -> dict:
                 result["video"] = str(info.get("url") or info.get("webpage_url") or url)
                 result["parser"] = "yt-dlp"
                 return result
-
             thumbs = info.get("thumbnails") or []
             thumb_urls = [str(x.get("url")) for x in thumbs if isinstance(x, dict) and x.get("url")]
             result["images"] = dedupe([x for x in thumb_urls if looks_like_image(x)])
@@ -207,7 +192,6 @@ def inspect_note(input_url: str) -> dict:
     if result["images"]:
         result["notetype"] = "pic"
         result["nt"] = "pic"
-
     return result
 
 
@@ -226,11 +210,7 @@ def media_image(url: str = Query(...)):
             media_type = resp.headers.get_content_type() or "image/jpeg"
             if not media_type.startswith("image/"):
                 media_type = "image/jpeg"
-            return Response(
-                content=data,
-                media_type=media_type,
-                headers={"Cache-Control": "public, max-age=3600"},
-            )
+            return Response(content=data, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})
     except HTTPException:
         raise
     except Exception as exc:
@@ -253,17 +233,24 @@ def xhszshq_gate(
     raw_images = note["images"]
     images = [proxy_image_url(x) for x in raw_images]
     first_image = images[0] if images else ""
+    note_url = note["resolved_url"] or normalize_xhs_url(c)
+
+    # 重要：原捷徑很可能在圖片分支直接讀 GATE.url。
+    # 圖片筆記時，url 改為「完整圖片清單」而不是原筆記網址；
+    # 影片筆記時，url 改為影片網址。原筆記網址另外保留在 note_url/source_url。
+    media_url = images if note["nt"] == "pic" else (note["video"] or note_url)
+
     payload = {
         "status": 1,
         "gate": 1,
         "notetype": note["notetype"],
         "nt": note["nt"],
-        "url": note["resolved_url"] or normalize_xhs_url(c),
+        "url": media_url,
+        "note_url": note_url,
+        "source_url": note_url,
         "title": note["title"],
         "author": note["author"],
 
-        # 捷徑使用這些網址時，會從我們自己的 /media/image 取得真正圖片位元組，
-        # 避免小紅書 CDN 的 Referer / User-Agent 限制造成「顯示成功但相簿沒有照片」。
         "images": images,
         "image": images,
         "pic": images,
@@ -278,20 +265,25 @@ def xhszshq_gate(
         "url_list": images,
         "originals": images,
         "original_images": images,
+        "imageUrls": images,
+        "image_urls": images,
+        "imgUrls": images,
+        "img_urls": images,
+        "downloadUrls": images,
+        "download_urls": images,
+        "data": images,
         "first_image": first_image,
         "image_url": first_image,
         "pic_url": first_image,
 
-        # 保留原始 CDN 網址供診斷。
         "raw_images": raw_images,
         "raw_first_image": raw_images[0] if raw_images else "",
-
         "video": note["video"],
         "videos": [note["video"]] if note["video"] else [],
         "live": [],
         "livephoto": [],
         "image_count": len(images),
         "parser": note["parser"],
-        "message": "gate-json-media-proxy-v6" if images or note["video"] else "parse_failed_no_media",
+        "message": "gate-json-media-proxy-v7" if images or note["video"] else "parse_failed_no_media",
     }
     return JSONResponse(payload)
