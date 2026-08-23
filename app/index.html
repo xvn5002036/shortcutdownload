@@ -2,26 +2,16 @@
 <html lang="zh-Hant">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>媒體下載器</title>
+  <title>XHS Pro System</title>
   <style>
-    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#15202b;background:#f4f6f8}
-    body{margin:0;min-height:100vh;display:grid;place-items:center}.card{width:min(88vw,560px);background:white;padding:28px;border-radius:22px;box-shadow:0 14px 45px #18344a18}
-    h1{margin:0 0 8px;font-size:28px}.hint{color:#536471;line-height:1.5}input,button{box-sizing:border-box;width:100%;font-size:17px;border-radius:12px;padding:14px}
-    input{border:1px solid #c7d0d9;margin:12px 0 0}button{border:0;background:#0a84ff;color:white;font-weight:700;cursor:pointer;margin-top:12px}button:disabled{opacity:.55}
-    #key{font-size:15px}.setup{display:none;padding:12px;background:#fff4d6;color:#6d4c00;border-radius:12px;margin:14px 0;line-height:1.45}
-    #status{min-height:24px;margin-top:14px;color:#536471;white-space:pre-wrap}.legal{font-size:13px;color:#7b8793;margin-top:18px}
+    :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fb}*{box-sizing:border-box}body{margin:0;min-height:100vh}.wrap{width:min(1080px,92vw);margin:auto;padding:52px 0}.hero{background:linear-gradient(135deg,#111827,#27364f);color:#fff;border-radius:28px;padding:38px;box-shadow:0 18px 60px #0f172a24}.hero h1{font-size:38px;margin:0 0 10px}.hero p{color:#dbe4ef;line-height:1.7;max-width:720px}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}.btn{display:inline-block;text-decoration:none;border:0;border-radius:12px;padding:12px 18px;font-weight:750;cursor:pointer}.primary{background:#fff;color:#111827}.secondary{background:#ffffff16;color:#fff;border:1px solid #ffffff35}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:18px}.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:20px}.card h3{margin:0 0 8px}.card p{margin:0;color:#64748b;line-height:1.6;font-size:14px}.download{margin-top:18px}.download form{display:grid;grid-template-columns:1fr auto;gap:10px}.download input{width:100%;border:1px solid #d5dbe5;border-radius:12px;padding:13px;font-size:16px}.download button{border:0;background:#2563eb;color:#fff;border-radius:12px;padding:0 18px;font-weight:700}.status{margin-top:10px;color:#64748b;min-height:22px}.api{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:#0f172a;color:#dbeafe;padding:12px;border-radius:12px;overflow:auto;font-size:13px}.note{font-size:13px;color:#7b8793;margin-top:14px}@media(max-width:760px){.wrap{padding:22px 0}.hero{padding:26px}.hero h1{font-size:30px}.grid{grid-template-columns:1fr}.download form{grid-template-columns:1fr}.download button{padding:13px}}
   </style>
 </head>
-<body><main class="card"><h1>媒體下載器</h1><div class="hint">貼上 Facebook、Instagram、X、Bilibili、YouTube 或小紅書的公開網址。</div>
-  <div id="setup" class="setup">此頁不能直接從電腦檔案開啟。請先部署服務，再開啟服務的 HTTPS 網址；或在本機啟動服務後前往 <b>http://localhost:8080</b>。</div>
-  <input id="url" type="url" placeholder="https://…" autocomplete="off">
-  <input id="key" type="password" placeholder="API 金鑰（若服務有設定）" autocomplete="off">
-  <button id="go">開始下載</button><div id="status"></div>
-  <div class="legal">只下載你擁有或獲准保存的內容。私人內容、DRM 與登入限定內容不支援。</div></main>
-<script>
-const button=document.querySelector('#go'),status=document.querySelector('#status'),input=document.querySelector('#url'),keyInput=document.querySelector('#key'),setup=document.querySelector('#setup');
-const isLocalFile=location.protocol==='file:';if(isLocalFile){setup.style.display='block';button.disabled=true}keyInput.value=localStorage.getItem('downloadApiKey')||'';
-button.onclick=async()=>{button.disabled=true;status.textContent='正在處理，請稍候…';try{const headers={'Content-Type':'application/json'};const key=keyInput.value.trim();if(key){headers['X-API-Key']=key;localStorage.setItem('downloadApiKey',key)}else{localStorage.removeItem('downloadApiKey')}
-const response=await fetch('/api/download',{method:'POST',headers,body:JSON.stringify({url:input.value})});if(!response.ok){let data;try{data=await response.json()}catch{}throw new Error(data?.detail||`下載失敗 (${response.status})`)}
-const blob=await response.blob(),a=document.createElement('a'),disposition=response.headers.get('content-disposition')||'';let name='download';const match=disposition.match(/filename\*?=(?:UTF-8''|\")?([^\";]+)/i);if(match)name=decodeURIComponent(match[1].replace(/\"/g,''));a.href=URL.createObjectURL(blob);a.download=name;a.click();URL.revokeObjectURL(a.href);status.textContent='下載已開始。';}catch(error){status.textContent=error.message}finally{if(!isLocalFile)button.disabled=false}};
-</script></body></html>
+<body><div class="wrap">
+  <section class="hero"><h1>XHS Pro System</h1><p>小紅書捷徑後端、啟用碼、裝置綁定、下載服務與管理後台。此版本正在依照「小红书助手 pro v4.7」流程逐項建立相容功能。</p><div class="actions"><a class="btn primary" href="/admin">進入管理後台</a><a class="btn secondary" href="/health">服務狀態</a></div></section>
+  <div class="grid"><div class="card"><h3>啟用碼</h3><p>支援期限、永久授權、停用、刪除與一碼多裝置上限。</p></div><div class="card"><h3>裝置綁定</h3><p>保存捷徑傳入的 device_id、平台、首次與最後使用時間，並可從後台解除綁定。</p></div><div class="card"><h3>捷徑 API</h3><p>保留原流程使用的 /xhszshq?a=&b=&c=&device_id= 呼叫格式。</p></div></div>
+  <section class="card download"><h3>公開媒體下載測試</h3><p>目前保留原專案的公開媒體下載功能，後續會專注補齊小紅書圖片、影片、Live Photo 與動圖工廠流程。</p><form id="form"><input id="url" type="url" placeholder="貼上公開的小紅書 / YouTube / Instagram 等網址" required><button>開始下載</button></form><div id="status" class="status"></div></section>
+  <section class="card" style="margin-top:18px"><h3>捷徑相容端點</h3><div class="api">GET /xhszshq?a=啟用碼&amp;b=ios&amp;c=URL編碼文字&amp;device_id=deviceid</div><div class="note">目前第一階段已完成啟用碼與 device_id 驗證；原版其他回傳資料會依捷徑解析結果繼續加入。</div></section>
+</div>
+<script>const f=document.getElementById('form'),s=document.getElementById('status');f.onsubmit=async e=>{e.preventDefault();s.textContent='正在處理…';const b=f.querySelector('button');b.disabled=true;try{const r=await fetch('/api/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:document.getElementById('url').value})});if(!r.ok){let d={};try{d=await r.json()}catch{}throw new Error(d.detail||`HTTP ${r.status}`)}const blob=await r.blob(),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='download';a.click();URL.revokeObjectURL(a.href);s.textContent='下載已開始。'}catch(err){s.textContent=err.message}finally{b.disabled=false}};</script>
+</body></html>
