@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urlsplit
 
 from . import compat7 as base
 
@@ -8,15 +8,14 @@ app = base.app
 
 
 def _raw_same_note_image(value) -> str:
-    """把目前文章 imageList 的 CDN 轉換參數移除，保留同一張媒體的原始資源路徑。
+    """把目前文章 exact imageList URL 轉成同一張媒體的原始資源 URL。
 
-    例如：
-    .../notes_pre_post/<media-id>!h5_1080jpg
-    會改成：
-    .../notes_pre_post/<media-id>
+    sns-webpic 的 `.../<media-id>!h5_1080jpg` 是展示/CDN 轉換版本。
+    直接刪掉 `!h5_1080jpg` 在 sns-webpic 會得到 404/502，因此不能這樣做。
 
-    這不是跨文章猜 URL；host/path/media-id 都來自目前網址 exact noteId 的 imageList，
-    只移除 CDN 顯示轉換尾碼（h5_1080jpg 等），以取得未套用顯示處理的原始檔。
+    這裡只取「目前文章 imageList 本身提供的 media-id」，轉成
+    `https://ci.xiaohongshu.com/<media-id>` 原始資源。media-id 不是猜的，
+    仍然來自同一網址、同一 exact noteId 的 imageList，不跨文章。
     """
     if not isinstance(value, str):
         return ""
@@ -25,16 +24,14 @@ def _raw_same_note_image(value) -> str:
         return ""
     try:
         p = urlsplit(value)
-        path = p.path
-        if "!" in path:
-            path = path.split("!", 1)[0]
-        # 圖片的 query 若只是顯示轉換也不要帶回去；原始媒體識別仍在 path。
-        return urlunsplit((p.scheme, p.netloc, path, "", ""))
+        last = (p.path.rsplit("/", 1)[-1] or "").split("!", 1)[0]
+        # 小紅書圖片媒體 ID 通常是 1040... / 1o0... 這類非空資源 ID。
+        if last and len(last) >= 16 and all(ch.isalnum() or ch in "_-" for ch in last):
+            return f"https://ci.xiaohongshu.com/{last}"
     except Exception:
-        return value.split("!", 1)[0]
+        pass
+    return value
 
 
-# compat7 的 _item_image_url 會在執行時查詢模組全域 _clean_image，
-# 因此在這裡替換即可保留所有「單一網址 + exact noteId」邊界判斷，
-# 只把實際下載來源改成同一張圖片的 raw CDN path。
+# 保留 compat7 的「單一網址 + exact noteId」邊界，只替換實際圖片來源。
 base._clean_image = _raw_same_note_image
