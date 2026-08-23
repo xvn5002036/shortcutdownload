@@ -77,11 +77,34 @@ def looks_like_image(value: str) -> bool:
     low = value.lower()
     if not low.startswith(("http://", "https://")):
         return False
-    host = (urlparse(value).hostname or "").lower()
-    if any(x in host for x in ALLOWED_IMAGE_HOST_TOKENS):
+
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    path = parsed.path.lower()
+
+    # 排除頁面靜態資源、頭像與空主機。這些先前被誤當圖片塞進 gigl，
+    # 會讓捷徑在「取得 URL 內容 / 轉 PNG」時直接報錯。
+    if not path or path == "/":
+        return False
+    if any(token in host for token in ("fe-static", "picasso-static", "avatar")):
+        return False
+    if path.endswith((".css", ".js", ".json", ".html", ".map", ".svg", ".txt", ".woff", ".woff2")):
+        return False
+
+    # 小紅書筆記正文圖片常見 CDN。
+    if host.startswith("sns-na-") and "xhscdn.com" in host:
         return True
-    path = urlparse(value).path.lower()
-    return path.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif"))
+    if "sns-webpic" in host and "xhscdn.com" in host:
+        return True
+    if "sns-img" in host:
+        return True
+
+    # 其他 CDN 只有在網址本身明確是圖片時才接受。
+    if path.endswith((".jpg", ".jpeg", ".png", ".webp", ".heic", ".avif")):
+        return True
+    if any(token in low for token in ("imageview2", "imagemogr2", "format%2fjpg", "format/jpg", "format%2fwebp", "format/webp")):
+        return any(x in host for x in ALLOWED_IMAGE_HOST_TOKENS)
+    return False
 
 
 def looks_like_video(value: str) -> bool:
@@ -98,7 +121,9 @@ def is_allowed_remote_image(value: str) -> bool:
     try:
         parsed = urlparse(value)
         host = (parsed.hostname or "").lower()
-        return parsed.scheme in {"http", "https"} and any(x in host for x in ALLOWED_IMAGE_HOST_TOKENS)
+        return parsed.scheme in {"http", "https"} and (
+            "xhscdn" in host or "sns-img" in host or "qpic" in host or "alicdn" in host
+        ) and looks_like_image(value)
     except Exception:
         return False
 
@@ -250,7 +275,7 @@ def media_image(url: str = Query(...)):
             data = resp.read(25 * 1024 * 1024)
             media_type = resp.headers.get_content_type() or "image/jpeg"
             if not media_type.startswith("image/"):
-                media_type = "image/jpeg"
+                raise HTTPException(status_code=502, detail="remote resource is not an image")
             logger.info("XHS_IMAGE_PROXY bytes=%s type=%s host=%s", len(data), media_type, urlparse(url).hostname or "")
             return Response(content=data, media_type=media_type, headers={"Cache-Control": "public, max-age=3600"})
     except HTTPException:
@@ -309,7 +334,6 @@ def xhszshq_gate(
         "source_url": note_url,
         "title": note["title"],
         "author": note["author"],
-
         "image": first_image,
         "images": images,
         "pic": first_image,
@@ -321,6 +345,7 @@ def xhszshq_gate(
         "original": first_image,
         "originals": images,
         "urls": images,
+        "gigl": images,
         "imageList": images,
         "image_list": images,
         "picList": images,
@@ -331,11 +356,8 @@ def xhszshq_gate(
         "picurls": images,
         "picUrl": first_image,
         "picUrls": images,
-        "gigl": images,
-
         "video": note["video"],
         "videos": [note["video"]] if note["video"] else [],
-
         "livepic": live_pairs,
         "livepics": live_pairs,
         "live": live_pairs,
@@ -350,7 +372,6 @@ def xhszshq_gate(
         "live_videos": live_videos,
         "livepic_video": first_live_video,
         "livepic_videos": live_videos,
-
         "image_count": len(images),
         "live_count": len(live_pairs),
         "parser": note["parser"],
