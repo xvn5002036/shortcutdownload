@@ -29,9 +29,6 @@ def _raw_same_note_image(value) -> str:
         p = urlsplit(value)
         path = p.path
 
-        # 找 imageList URL 中真正的資源路徑：
-        # /.../notes_pre_post/<id>!h5_1080jpg
-        # /.../note_pre_post_uhdr/<id>!h5_1080jpg
         m = re.search(r"/(notes_pre_post|note_pre_post_uhdr|spectrum)/([^/?#!]+)", path, flags=re.I)
         if m:
             prefix = m.group(1)
@@ -39,8 +36,6 @@ def _raw_same_note_image(value) -> str:
             if media_id:
                 return f"https://ci.xiaohongshu.com/{prefix}/{media_id}?imageView2/format/jpeg"
 
-        # 舊式 URL 有時本身就是 ci.xiaohongshu.com/<traceId>；
-        # 這種保留 ID 並只要求 jpeg，不自行改 ID。
         last = (path.rsplit("/", 1)[-1] or "").split("!", 1)[0]
         if last and len(last) >= 16 and all(ch.isalnum() or ch in "_-" for ch in last):
             return f"https://ci.xiaohongshu.com/{last}?imageView2/format/jpeg"
@@ -50,5 +45,27 @@ def _raw_same_note_image(value) -> str:
     return value
 
 
-# 保留 compat7 的「單一網址 + exact noteId」邊界，只替換實際圖片來源。
+# 圖片部分保持原樣，只替換 compat7 的圖片清理函式。
 base._clean_image = _raw_same_note_image
+
+
+# 影片修正：compat7 原本會先看到影片封面 imageList，因而把影片筆記判成 pic。
+# 這裡只在「同一個輸入網址」能被既有 yt-dlp/inspect_note 明確判定為 video 時，
+# 優先回傳影片；不是 video 時完全回到 compat7 原本的圖片流程，因此不改動
+# 已經驗證成功的無水印原圖處理。
+_original_inspect_one_url_only = base.inspect_one_url_only
+
+
+def _inspect_one_url_only_video_first(input_url: str):
+    try:
+        note = base.inspect_note(input_url)
+        if note.get("nt") == "video" and note.get("video"):
+            resolved = note.get("resolved_url") or base.resolve_url(input_url) or base.normalize_xhs_url(input_url)
+            return resolved, [], [str(note["video"])], "yt-dlp-same-url-video-first"
+    except Exception:
+        pass
+
+    return _original_inspect_one_url_only(input_url)
+
+
+base.inspect_one_url_only = _inspect_one_url_only_video_first
