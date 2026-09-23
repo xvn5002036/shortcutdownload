@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import json
 import logging
+import os
 import re
 import subprocess
 from urllib.parse import quote, urlparse, urlunparse
@@ -22,7 +23,7 @@ app.router.routes[:] = [
 ]
 
 UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1"
-PUBLIC_BASE = "https://shortcutdownload.onrender.com"
+PUBLIC_BASE = os.getenv("PUBLIC_BASE_URL", "https://shortcutdownload.onrender.com").rstrip("/")
 ALLOWED_IMAGE_HOST_TOKENS = ("xhscdn", "sns-img", "qpic", "alicdn")
 LIVE_MARKERS = (
     "livephoto", "live_photo", "livepic", "motionphoto", "motion_photo",
