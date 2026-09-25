@@ -18,7 +18,9 @@ from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from .db import (
+    clear_logs,
     create_license,
+    delete_log,
     delete_license,
     list_devices,
     list_licenses,
@@ -294,5 +296,17 @@ def admin_unbind_device(device_row_id: int, _: str = Depends(require_admin)):
 
 
 @app.get("/api/admin/logs")
-def admin_logs(limit: int = Query(default=200, ge=1, le=1000), _: str = Depends(require_admin)):
+def admin_logs(limit: int = Query(default=50, ge=1, le=1000), _: str = Depends(require_admin)):
     return {"items": list_logs(limit)}
+
+
+@app.delete("/api/admin/logs")
+def admin_clear_logs(_: str = Depends(require_admin)):
+    return {"deleted": clear_logs()}
+
+
+@app.delete("/api/admin/logs/{log_id}")
+def admin_delete_log(log_id: int, _: str = Depends(require_admin)):
+    if not delete_log(log_id):
+        raise HTTPException(404, "找不到這筆 API 紀錄")
+    return {"success": True}
