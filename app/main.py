@@ -81,6 +81,16 @@ def hash_matches(value: str | None, expected_hash: str) -> bool:
     return secrets.compare_digest(actual, expected_hash)
 
 
+def admin_password_matches(value: str) -> bool:
+    configured_password = os.getenv("XHS_ADMIN_PASSWORD")
+    if configured_password is not None:
+        return secrets.compare_digest(
+            hashlib.sha256(value.encode("utf-8")).digest(),
+            hashlib.sha256(configured_password.encode("utf-8")).digest(),
+        )
+    return hash_matches(value, ADMIN_TOKEN_SHA256)
+
+
 def session_value() -> str:
     secret = os.getenv("XHS_ADMIN_TOKEN", "")
     if not secret:
@@ -188,7 +198,7 @@ def admin_page(xhs_admin_session: str | None = Cookie(default=None)) -> str:
 
 @app.post("/api/admin/login")
 def admin_login(request: LoginRequest, response: Response):
-    if not hash_matches(request.password, ADMIN_TOKEN_SHA256):
+    if not admin_password_matches(request.password):
         raise HTTPException(401, "管理密碼錯誤")
     token = session_value()
     if not token:
