@@ -13,7 +13,8 @@
 | 變數 | 值 |
 | --- | --- |
 | `DATABASE_URL` | 現有 Supabase PostgreSQL **Session Pooler** 連線字串；建議以 Secret Manager 密碼掛入 |
-| `XHS_ADMIN_TOKEN` | 沿用目前 Render 的管理 session token；以 Secret Manager 管理 |
+| `XHS_ADMIN_PASSWORD` | 新管理登入密碼；以 Secret Manager 管理。設定後，原本的管理登入密碼不再有效 |
+| `XHS_ADMIN_TOKEN` | 管理登入 Cookie 的簽署密鑰，請使用長度足夠的獨立隨機值；以 Secret Manager 管理，這不是登入密碼 |
 | `PUBLIC_BASE_URL` | 建立服務後取得的 Cloud Run HTTPS 根網址，**不含結尾斜線**，例如 `https://shortcutdownload-xxxxx.asia-east1.run.app` |
 | `MAX_DOWNLOAD_MB` | `250` |
 | `DOWNLOAD_TIMEOUT_SECONDS` | `180` |
