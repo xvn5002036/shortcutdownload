@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import re
 import subprocess
+from contextvars import ContextVar
 from urllib.parse import quote, urlparse
 from urllib.request import Request as URLRequest, urlopen
 
@@ -225,20 +226,43 @@ def _find_exact_note_images(obj, nid: str, depth: int = 0, seen=None) -> list[st
     return []
 
 
+# 每次捷徑請求獨立保存解析結果，避免重複下載相同頁面。
+_URL_CACHE: ContextVar[tuple[str, str] | None] = ContextVar("xhs_resolved_url", default=None)
+_HTML_CACHE: ContextVar[tuple[str, str] | None] = ContextVar("xhs_page_html", default=None)
+
+
+def _resolve_once(input_url: str) -> str:
+    cached = _URL_CACHE.get()
+    if cached is not None and cached[0] == input_url:
+        return cached[1]
+    resolved = resolve_url(input_url) or normalize_xhs_url(input_url)
+    _URL_CACHE.set((input_url, resolved))
+    return resolved
+
+
+def _load_note_html(resolved: str) -> str:
+    cached = _HTML_CACHE.get()
+    if cached is not None and cached[0] == resolved:
+        return cached[1]
+    req = URLRequest(resolved, headers={
+        "User-Agent": UA,
+        "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
+        "Referer": "https://www.xiaohongshu.com/",
+    })
+    with urlopen(req, timeout=25) as resp:
+        raw = resp.read(12 * 1024 * 1024).decode("utf-8", errors="ignore")
+    _HTML_CACHE.set((resolved, raw))
+    return raw
+
+
 def _same_url_exact_note_images(resolved: str) -> tuple[list[str], str]:
     """只抓目前網址自己的 HTML，再以 URL 裡的 exact noteId 鎖定物件。"""
     nid = _note_id_from_url(resolved)
     if not nid:
         return [], "same_url_note_id_missing"
     try:
-        req = URLRequest(resolved, headers={
-            "User-Agent": UA,
-            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-            "Referer": "https://www.xiaohongshu.com/",
-        })
-        with urlopen(req, timeout=25) as resp:
-            raw = resp.read(12 * 1024 * 1024).decode("utf-8", errors="ignore")
+        raw = _load_note_html(resolved)
     except Exception as exc:
         return [], f"same_url_fetch_{type(exc).__name__}"
 
@@ -278,7 +302,7 @@ def _same_url_exact_note_images(resolved: str) -> tuple[list[str], str]:
 
 def inspect_one_url_only(input_url: str) -> tuple[str, list[str], list[str], str]:
     """一個網址就是一篇文章；圖片優先從 exact note object 取原圖欄位。"""
-    resolved = resolve_url(input_url) or normalize_xhs_url(input_url)
+    resolved = _resolve_once(input_url)
     if not resolved:
         return "", [], [], "url_missing"
 
