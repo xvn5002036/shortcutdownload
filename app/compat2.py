@@ -5,8 +5,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+from http.client import IncompleteRead
 from pathlib import Path
 from urllib.parse import quote, urlparse
+from urllib.error import HTTPError, URLError
 from urllib.request import Request as URLRequest, urlopen
 
 from fastapi import HTTPException, Query
@@ -31,6 +33,8 @@ app.router.routes[:] = [
 ]
 
 MAX_VIDEO_PROXY_BYTES = int(os.getenv("MAX_VIDEO_PROXY_MB", "500")) * 1024 * 1024
+VIDEO_REMUX_TIMEOUT_SECONDS = int(os.getenv("VIDEO_REMUX_TIMEOUT_SECONDS", "180"))
+VIDEO_DOWNLOAD_ATTEMPTS = 3
 
 
 def proxy_video_url(remote_url: str) -> str:
@@ -80,41 +84,74 @@ def dedupe_live_videos(values: list[str]) -> list[str]:
 
 
 def _download_video_to_file(remote_url: str, source_path: Path) -> None:
-    """分段完整下載來源影片，避免舊版一次 read(120MB) 把高清影片截斷。"""
-    req = URLRequest(remote_url, headers={
+    """下載影片；連線中斷時只從已寫入的位元組續傳。"""
+    headers = {
         "User-Agent": UA,
         "Accept": "video/mp4,video/*;q=0.9,*/*;q=0.8",
         "Referer": "https://www.xiaohongshu.com/",
-    })
-    with urlopen(req, timeout=60) as resp:
-        upstream_type = resp.headers.get_content_type() or ""
-        if upstream_type and not (
-            upstream_type.startswith("video/")
-            or upstream_type in {"application/octet-stream", "binary/octet-stream"}
-        ):
-            raise HTTPException(status_code=502, detail="remote resource is not a video")
+        "Accept-Encoding": "identity",
+    }
+    total = 0
+    expected_total = None
+    for attempt in range(VIDEO_DOWNLOAD_ATTEMPTS):
+        request_headers = dict(headers)
+        if total:
+            request_headers["Range"] = f"bytes={total}-"
+        try:
+            with urlopen(URLRequest(remote_url, headers=request_headers), timeout=60) as resp:
+                upstream_type = resp.headers.get_content_type() or ""
+                if upstream_type and not (
+                    upstream_type.startswith("video/")
+                    or upstream_type in {"application/octet-stream", "binary/octet-stream"}
+                ):
+                    raise HTTPException(status_code=502, detail="remote resource is not a video")
 
-        content_length = resp.headers.get("Content-Length")
-        if content_length:
-            try:
-                if int(content_length) > MAX_VIDEO_PROXY_BYTES:
+                content_length = resp.headers.get("Content-Length")
+                if total:
+                    # Appending a full 200 response would silently corrupt the file.
+                    content_range = resp.headers.get("Content-Range", "")
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", content_range)
+                    if resp.status != 206 or not match or int(match.group(1)) != total:
+                        raise HTTPException(status_code=502, detail="remote video does not support safe resume")
+                    if match.group(3) != "*":
+                        expected_total = int(match.group(3))
+                elif resp.status == 206:
+                    match = re.fullmatch(r"bytes (\d+)-(\d+)/(\d+|\*)", resp.headers.get("Content-Range", ""))
+                    if not match or int(match.group(1)) != 0 or match.group(3) == "*":
+                        raise HTTPException(status_code=502, detail="remote video returned an incomplete range")
+                    expected_total = int(match.group(3))
+                elif content_length:
+                    try:
+                        expected_total = int(content_length)
+                    except ValueError:
+                        pass
+
+                if expected_total is not None and expected_total > MAX_VIDEO_PROXY_BYTES:
                     raise HTTPException(status_code=413, detail="video is too large")
-            except ValueError:
-                pass
 
-        total = 0
-        with source_path.open("wb") as output:
-            while True:
-                chunk = resp.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_VIDEO_PROXY_BYTES:
-                    raise HTTPException(status_code=413, detail="video is too large")
-                output.write(chunk)
+                with source_path.open("ab" if total else "wb") as output:
+                    while True:
+                        chunk = resp.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+                        if total > MAX_VIDEO_PROXY_BYTES:
+                            raise HTTPException(status_code=413, detail="video is too large")
+                        output.write(chunk)
 
-        if total <= 0:
-            raise HTTPException(status_code=502, detail="empty video response")
+            if total <= 0:
+                raise HTTPException(status_code=502, detail="empty video response")
+            if expected_total is None or total == expected_total:
+                return
+            if total > expected_total:
+                raise HTTPException(status_code=502, detail="remote video size changed during download")
+        except (HTTPError, URLError, IncompleteRead, OSError, TimeoutError) as exc:
+            if isinstance(exc, HTTPError) and exc.code not in {429, 500, 502, 503, 504}:
+                raise HTTPException(status_code=502, detail=f"remote video returned HTTP {exc.code}") from exc
+            if attempt == VIDEO_DOWNLOAD_ATTEMPTS - 1:
+                raise HTTPException(status_code=502, detail="remote video download interrupted after retries") from exc
+
+    raise HTTPException(status_code=502, detail="remote video download incomplete after retries")
 
 
 def _remux_file_to_ios_mp4(source_path: Path, output_path: Path) -> None:
@@ -129,7 +166,7 @@ def _remux_file_to_ios_mp4(source_path: Path, output_path: Path) -> None:
             str(output_path),
         ],
         capture_output=True,
-        timeout=180,
+        timeout=VIDEO_REMUX_TIMEOUT_SECONDS,
         check=False,
     )
     if result.returncode != 0 or not output_path.exists() or output_path.stat().st_size <= 0:
@@ -148,6 +185,7 @@ def media_video(url: str = Query(...)):
     try:
         _download_video_to_file(url, source_path)
         _remux_file_to_ios_mp4(source_path, output_path)
+        source_path.unlink(missing_ok=True)
         return FileResponse(
             path=output_path,
             filename="xhs-original-video.mp4",
