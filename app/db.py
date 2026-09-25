@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 RAW_DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USE_POSTGRES = RAW_DATABASE_URL.startswith("postgres://") or RAW_DATABASE_URL.startswith("postgresql://")
+LOG_RETENTION_LIMIT = 50
 
 
 def normalize_database_url(value: str) -> str:
@@ -221,6 +222,23 @@ def log_request(license_key: str, device_id: str, platform: str, result: str, pa
             sql("INSERT INTO api_logs (license_key, device_id, platform, result, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)"),
             (license_key, device_id, platform, result, payload[:2000], iso(utcnow())),
         )
+        # Keep the newest records only; older entries are pruned on the next request.
+        conn.execute(
+            sql("DELETE FROM api_logs WHERE id < (SELECT id FROM api_logs ORDER BY id DESC LIMIT 1 OFFSET ?)"),
+            (LOG_RETENTION_LIMIT - 1,),
+        )
+
+
+def delete_log(log_id: int) -> int:
+    with connect() as conn:
+        cursor = conn.execute(sql("DELETE FROM api_logs WHERE id = ?"), (log_id,))
+        return cursor.rowcount
+
+
+def clear_logs() -> int:
+    with connect() as conn:
+        cursor = conn.execute("DELETE FROM api_logs")
+        return cursor.rowcount
 
 
 def list_logs(limit: int = 200) -> list[dict]:
