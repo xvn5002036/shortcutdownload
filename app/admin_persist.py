@@ -9,7 +9,7 @@ from fastapi import Cookie, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from .main import ADMIN_TOKEN_SHA256, SESSION_COOKIE, SESSION_MAX_AGE, app, hash_matches, session_value
+from .main import SESSION_COOKIE, SESSION_MAX_AGE, admin_password_matches, app, session_value
 
 
 class RestoreRequest(BaseModel):
@@ -63,7 +63,7 @@ def admin_page_persistent(xhs_admin_session: str | None = Cookie(default=None)) 
 
 @app.post("/api/admin/login")
 def admin_login_persistent(request: LoginRequest, response: Response):
-    if not hash_matches(request.password, ADMIN_TOKEN_SHA256):
+    if not admin_password_matches(request.password):
         raise HTTPException(401, "管理密碼錯誤")
     _set_admin_cookie(response)
     restore = restore_value()
