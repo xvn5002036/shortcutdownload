@@ -199,7 +199,7 @@ def _find_exact_note_hd_video(obj, nid: str, depth: int = 0, seen=None) -> list[
 
 
 def _same_url_exact_note_hd_video(input_url: str):
-    resolved = base.resolve_url(input_url) or base.normalize_xhs_url(input_url)
+    resolved = base._resolve_once(input_url)
     if not resolved:
         return "", [], "hd_url_missing"
     nid = base._note_id_from_url(resolved)
@@ -207,14 +207,7 @@ def _same_url_exact_note_hd_video(input_url: str):
         return resolved, [], "hd_note_id_missing"
 
     try:
-        req = URLRequest(resolved, headers={
-            "User-Agent": base.UA,
-            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-            "Referer": "https://www.xiaohongshu.com/",
-        })
-        with urlopen(req, timeout=25) as resp:
-            raw = resp.read(12 * 1024 * 1024).decode("utf-8", errors="ignore")
+        raw = base._load_note_html(resolved)
     except Exception as exc:
         return resolved, [], f"hd_fetch_{type(exc).__name__}"
 

@@ -117,20 +117,13 @@ def _find_exact_note_metadata(obj, nid: str, depth: int = 0, seen=None) -> dict[
 
 
 def _same_url_metadata(input_url: str) -> dict[str, str]:
-    resolved = gate.resolve_url(input_url) or gate.normalize_xhs_url(input_url)
+    resolved = gate._resolve_once(input_url)
     nid = gate._note_id_from_url(resolved)
     if not resolved or not nid:
         return {"title": "", "desc": "", "author": ""}
 
     try:
-        req = URLRequest(resolved, headers={
-            "User-Agent": gate.UA,
-            "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-            "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
-            "Referer": "https://www.xiaohongshu.com/",
-        })
-        with urlopen(req, timeout=25) as resp:
-            raw = resp.read(12 * 1024 * 1024).decode("utf-8", errors="ignore")
+        raw = gate._load_note_html(resolved)
     except Exception:
         return {"title": "", "desc": "", "author": ""}
 
@@ -171,33 +164,39 @@ def xhszshq_gate_note_save(
     c: str = Query(default=""),
     device_id: str = Query(default=""),
 ):
-    # 先完整執行鎖定版 gate，媒體結果完全不變。
-    response = _locked_gate(a=a, b=b, c=c, device_id=device_id)
-
-    # 驗證失敗等非 JSON 回應直接原樣返回。
-    body = getattr(response, "body", b"")
+    url_token = gate._URL_CACHE.set(None)
+    html_token = gate._HTML_CACHE.set(None)
     try:
-        payload = json.loads(body.decode("utf-8")) if body else None
-    except Exception:
-        return response
-    if not isinstance(payload, dict) or payload.get("error"):
-        return response
-
-    # 只補筆記保存使用的三個欄位。
-    metadata = _same_url_metadata(c)
-    if metadata.get("title"):
-        payload["title"] = metadata["title"]
-    payload["desc"] = metadata.get("desc") or payload.get("desc") or ""
-    payload["description"] = payload["desc"]
-    if metadata.get("author"):
-        payload["author"] = metadata["author"]
-
-    # 兼容捷徑可能使用的別名；不影響原本媒體欄位。
-    payload["note_title"] = payload.get("title") or ""
-    payload["note_desc"] = payload.get("desc") or ""
-    payload["nickname"] = payload.get("author") or ""
-    payload["message_note_save"] = "ok-note-save-metadata-v1"
-    return JSONResponse(payload)
+        # 先完整執行鎖定版 gate，媒體結果完全不變。
+        response = _locked_gate(a=a, b=b, c=c, device_id=device_id)
+    
+        # 驗證失敗等非 JSON 回應直接原樣返回。
+        body = getattr(response, "body", b"")
+        try:
+            payload = json.loads(body.decode("utf-8")) if body else None
+        except Exception:
+            return response
+        if not isinstance(payload, dict) or payload.get("error"):
+            return response
+    
+        # 只補筆記保存使用的三個欄位。
+        metadata = _same_url_metadata(c)
+        if metadata.get("title"):
+            payload["title"] = metadata["title"]
+        payload["desc"] = metadata.get("desc") or payload.get("desc") or ""
+        payload["description"] = payload["desc"]
+        if metadata.get("author"):
+            payload["author"] = metadata["author"]
+    
+        # 兼容捷徑可能使用的別名；不影響原本媒體欄位。
+        payload["note_title"] = payload.get("title") or ""
+        payload["note_desc"] = payload.get("desc") or ""
+        payload["nickname"] = payload.get("author") or ""
+        payload["message_note_save"] = "ok-note-save-metadata-v1"
+        return JSONResponse(payload)
+    finally:
+        gate._HTML_CACHE.reset(html_token)
+        gate._URL_CACHE.reset(url_token)
 
 
 # 最後才接管管理後台登入，完全不改上面的媒體與捷徑相容流程。
